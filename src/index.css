@@ -3,25 +3,90 @@
 @tailwind utilities;
 
 @layer base {
+    * {
+        @apply box-border;
+    }
+    
     body {
-        @apply bg-gradient-to-br from-gray-900 via-gray-800 to-black text-white;
+        @apply bg-gradient-to-br from-gray-900 via-gray-800 to-black text-white antialiased;
+        @apply min-h-screen;
+    }
+    
+    html {
+        @apply scroll-smooth;
     }
 }
 
 @layer components {
     .input {
-        @apply bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent;
+        @apply bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white placeholder-gray-400;
+        @apply focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-transparent;
+        @apply transition-all duration-200;
+        @apply text-sm sm:text-base;
+        @apply w-full;
     }
 
     .btn-primary {
-        @apply bg-sky-600 hover:bg-sky-700 text-white font-medium px-4 py-2 rounded-lg transition-colors duration-200;
+        @apply bg-sky-600 hover:bg-sky-700 active:bg-sky-800 text-white font-medium;
+        @apply px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg;
+        @apply transition-all duration-200;
+        @apply text-sm sm:text-base;
+        @apply disabled:opacity-50 disabled:cursor-not-allowed;
+        @apply focus:outline-none focus:ring-2 focus:ring-sky-500 focus:ring-offset-2 focus:ring-offset-gray-800;
     }
 
     .btn-secondary {
-        @apply bg-gray-700 hover:bg-gray-600 text-white font-medium px-4 py-2 rounded-lg transition-colors duration-200;
+        @apply bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-white font-medium;
+        @apply px-3 py-2 sm:px-4 sm:py-2.5 rounded-lg;
+        @apply transition-all duration-200;
+        @apply text-sm sm:text-base;
+        @apply disabled:opacity-50 disabled:cursor-not-allowed;
+        @apply focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-800;
     }
 
     .card {
-        @apply bg-gray-800/50 border border-gray-700 rounded-lg p-4 backdrop-blur-sm;
+        @apply bg-gray-800/50 border border-gray-700 rounded-lg p-3 sm:p-4 lg:p-6 backdrop-blur-sm;
+        @apply transition-all duration-200;
+    }
+    
+    .btn-sm {
+        @apply px-2 py-1 text-xs sm:text-sm rounded;
+    }
+    
+    .btn-md {
+        @apply px-3 py-1.5 text-sm sm:text-base rounded-lg;
+    }
+    
+    .btn-lg {
+        @apply px-4 py-2.5 text-base sm:text-lg rounded-lg;
+    }
+}
+
+@layer utilities {
+    .text-balance {
+        text-wrap: balance;
+    }
+    
+    .scrollbar-thin {
+        scrollbar-width: thin;
+        scrollbar-color: rgb(55 65 81) rgb(31 41 55);
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar-track {
+        background: rgb(31 41 55);
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar-thumb {
+        background: rgb(55 65 81);
+        border-radius: 4px;
+    }
+    
+    .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+        background: rgb(75 85 99);
     }
 }

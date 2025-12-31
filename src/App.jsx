@@ -157,6 +157,7 @@ const DEFAULT_SETTINGS = {
   dailyDrawdownLimit: 5,
   challengeType: "two-step", // two-step, one-step, zero-step
   masterAccountBalance: 10000,
+  monthlyTarget: 0, // Monthly target for master account (0 = not set)
 };
 
 // Advanced Date Picker Component
@@ -465,7 +466,10 @@ function App() {
   // Calculate equity curve
   const equityCurve = useMemo(() => {
     try {
-      let currentEquity = Number(settings.accountBalance) || 0;
+      const challengeType = settings.challengeType || "two-step";
+      let currentEquity = challengeType === "zero-step"
+        ? (Number(settings.masterAccountBalance) || settings.accountBalance)
+        : Number(settings.accountBalance) || 0;
       const curve = [{ trade: 0, equity: currentEquity }];
 
       trades.forEach((trade, index) => {
@@ -481,9 +485,46 @@ function App() {
       return curve;
     } catch (error) {
       console.error("Error calculating equity curve:", error);
-      return [{ trade: 0, equity: settings.accountBalance || 0 }];
+      const challengeType = settings.challengeType || "two-step";
+      const initialEquity = challengeType === "zero-step"
+        ? (Number(settings.masterAccountBalance) || settings.accountBalance)
+        : settings.accountBalance;
+      return [{ trade: 0, equity: initialEquity || 0 }];
     }
-  }, [trades, settings.accountBalance]);
+  }, [trades, settings.accountBalance, settings.masterAccountBalance, settings.challengeType]);
+
+  // Helper function to get starting balance based on challenge type and phase
+  const getStartingBalance = (settings, currentEquity) => {
+    const challengeType = settings.challengeType || "two-step";
+    
+    // For zero-step (direct master), always use masterAccountBalance
+    if (challengeType === "zero-step") {
+      return Number(settings.masterAccountBalance) || 0;
+    }
+    
+    // For other challenge types, determine if we're in Master phase
+    const initialBalance = settings.accountBalance;
+    let phase1Target = 0;
+    let phase2Target = 0;
+    
+    if (challengeType === "two-step") {
+      phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+      phase2Target = phase1Target * (1 + settings.phase2Target / 100);
+      if (currentEquity >= phase2Target) {
+        // In Master phase, use masterAccountBalance
+        return Number(settings.masterAccountBalance) || initialBalance;
+      }
+    } else if (challengeType === "one-step") {
+      phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+      if (currentEquity >= phase1Target) {
+        // In Master phase, use masterAccountBalance
+        return Number(settings.masterAccountBalance) || initialBalance;
+      }
+    }
+    
+    // Not in Master phase, use challenge account balance
+    return initialBalance;
+  };
 
   // Calculate dashboard metrics
   const metrics = useMemo(() => {
@@ -550,8 +591,11 @@ function App() {
           : "0.00";
 
       // Phase progress and detection based on challenge type
-      const initialBalance = settings.accountBalance;
+      // For zero-step, use masterAccountBalance as initial balance
       const challengeType = settings.challengeType || "two-step";
+      const initialBalance = challengeType === "zero-step" 
+        ? (Number(settings.masterAccountBalance) || settings.accountBalance)
+        : settings.accountBalance;
 
       let phase1Target = 0;
       let phase2Target = 0;
@@ -714,6 +758,69 @@ function App() {
         console.error("Error calculating drawdown:", error);
       }
 
+      // Calculate monthly target progress for master account
+      let monthlyTargetProgress = 0;
+      let monthlyTargetAmount = 0;
+      let monthlyStartingBalance = 0;
+      
+      if (currentPhase === "Master" || challengeType === "zero-step") {
+        monthlyTargetAmount = Number(settings.monthlyTarget) || 0;
+        if (monthlyTargetAmount > 0) {
+          // Find the starting balance for the current month
+          const now = new Date();
+          const currentMonth = now.getMonth();
+          const currentYear = now.getFullYear();
+          
+          // Find the first trade of the current month or the master account balance
+          const currentMonthTrades = trades.filter((t) => {
+            if (!t || !t.date) return false;
+            try {
+              const tradeDate = new Date(t.date);
+              return tradeDate.getMonth() === currentMonth && 
+                     tradeDate.getFullYear() === currentYear &&
+                     (t.isMasterPhase || challengeType === "zero-step");
+            } catch {
+              return false;
+            }
+          });
+          
+          if (currentMonthTrades.length > 0) {
+            // Find the balance before the first trade of this month
+            const firstMonthTradeIndex = trades.findIndex((t) => {
+              if (!t || !t.date) return false;
+              try {
+                const tradeDate = new Date(t.date);
+                return tradeDate.getMonth() === currentMonth && 
+                       tradeDate.getFullYear() === currentYear &&
+                       (t.isMasterPhase || challengeType === "zero-step");
+              } catch {
+                return false;
+              }
+            });
+            
+            if (firstMonthTradeIndex > 0) {
+              const prevTrade = trades[firstMonthTradeIndex - 1];
+              if (prevTrade && prevTrade.equityAfter) {
+                monthlyStartingBalance = Number(prevTrade.equityAfter) || Number(settings.masterAccountBalance);
+              } else {
+                monthlyStartingBalance = Number(settings.masterAccountBalance);
+              }
+            } else {
+              monthlyStartingBalance = Number(settings.masterAccountBalance);
+            }
+          } else {
+            // No trades this month, use master account balance
+            monthlyStartingBalance = Number(settings.masterAccountBalance);
+          }
+          
+          // Calculate progress: (current equity - starting balance) / monthly target * 100
+          const progressAmount = currentEquity - monthlyStartingBalance;
+          monthlyTargetProgress = monthlyTargetAmount > 0
+            ? Math.min((progressAmount / monthlyTargetAmount) * 100, 100)
+            : 0;
+        }
+      }
+
       return {
         totalTrades,
         wins,
@@ -732,6 +839,9 @@ function App() {
         phase2Target: phase2Target.toFixed(2),
         drawdownWarning,
         dailyDrawdown: dailyDrawdown.toFixed(2),
+        monthlyTargetProgress: monthlyTargetProgress.toFixed(2),
+        monthlyTargetAmount: monthlyTargetAmount.toFixed(2),
+        monthlyStartingBalance: monthlyStartingBalance.toFixed(2),
       };
     } catch (error) {
       console.error("Error calculating metrics:", error);
@@ -762,9 +872,30 @@ function App() {
     try {
       setTrades((prev) => {
         if (prev.length === 0) return prev;
-        let runningEquity = Number(newSettings.accountBalance) || 0;
+        
+        const challengeType = newSettings.challengeType || "two-step";
+        let runningEquity = challengeType === "zero-step"
+          ? (Number(newSettings.masterAccountBalance) || newSettings.accountBalance)
+          : Number(newSettings.accountBalance) || 0;
+        
+        const initialBalance = newSettings.accountBalance;
+        const phase1Target = initialBalance * (1 + newSettings.phase1Target / 100);
+        const phase2Target = phase1Target * (1 + newSettings.phase2Target / 100);
+        let inMasterPhase = challengeType === "zero-step";
+        
         return prev.map((trade) => {
           if (!trade) return trade;
+
+          // Check if we should transition to master phase
+          if (!inMasterPhase && challengeType !== "zero-step") {
+            if (challengeType === "two-step" && runningEquity >= phase2Target) {
+              inMasterPhase = true;
+              runningEquity = Number(newSettings.masterAccountBalance) || runningEquity;
+            } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+              inMasterPhase = true;
+              runningEquity = Number(newSettings.masterAccountBalance) || runningEquity;
+            }
+          }
 
           const lotSize = Number(trade.lotSize) || 0;
           const riskPercent = Number(newSettings.riskPercent) || 0;
@@ -783,7 +914,9 @@ function App() {
 
           // Ensure runningEquity is valid
           if (isNaN(runningEquity) || !isFinite(runningEquity)) {
-            runningEquity = newSettings.accountBalance || 0;
+            runningEquity = inMasterPhase 
+              ? (Number(newSettings.masterAccountBalance) || newSettings.accountBalance)
+              : (newSettings.accountBalance || 0);
           }
 
           return {
@@ -792,6 +925,7 @@ function App() {
             rewardDollars: rewardDollars.toFixed(2),
             resultDollars: result.toFixed(2),
             equityAfter: runningEquity.toFixed(2),
+            isMasterPhase: inMasterPhase,
           };
         });
       });
@@ -891,6 +1025,7 @@ function App() {
       phase1Target: { min: 0, max: 100 },
       phase2Target: { min: 0, max: 100 },
       dailyDrawdownLimit: { min: 0, max: 100 },
+      monthlyTarget: { min: 0, max: 10000000 },
     };
 
     if (limits[key]) {
@@ -949,12 +1084,53 @@ function App() {
 
     // Calculate current equity before this trade
     let runningEquity = settings.accountBalance;
+    const challengeType = settings.challengeType || "two-step";
+    
+    // For zero-step (direct master), start with masterAccountBalance
+    if (challengeType === "zero-step") {
+      runningEquity = Number(settings.masterAccountBalance) || settings.accountBalance;
+    }
+    
     if (trades.length > 0) {
       const lastTrade = trades[trades.length - 1];
       if (lastTrade && lastTrade.equityAfter) {
         const parsed = Number(lastTrade.equityAfter);
         if (!isNaN(parsed) && isFinite(parsed)) {
           runningEquity = parsed;
+        }
+      }
+    } else {
+      // First trade - check if we should use master account
+      if (challengeType === "zero-step") {
+        runningEquity = Number(settings.masterAccountBalance) || settings.accountBalance;
+      }
+    }
+    
+    // Check if we're in Master phase (for non-zero-step challenges)
+    if (challengeType !== "zero-step" && trades.length > 0) {
+      const lastTrade = trades[trades.length - 1];
+      if (lastTrade && lastTrade.isMasterPhase) {
+        // Already in master phase, continue using master account balance
+        // runningEquity is already set from last trade
+      } else {
+        // Check if this trade will transition us to Master phase
+        const initialBalance = settings.accountBalance;
+        let phase1Target = 0;
+        let phase2Target = 0;
+        
+        if (challengeType === "two-step") {
+          phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+          phase2Target = phase1Target * (1 + settings.phase2Target / 100);
+          if (runningEquity >= phase2Target) {
+            // Transitioning to Master, use masterAccountBalance
+            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+          }
+        } else if (challengeType === "one-step") {
+          phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+          if (runningEquity >= phase1Target) {
+            // Transitioning to Master, use masterAccountBalance
+            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+          }
         }
       }
     }
@@ -970,6 +1146,11 @@ function App() {
 
     const result = newTrade.outcome === "Win" ? rewardDollars : -riskDollars;
     const equityAfter = runningEquity + result;
+    
+    // Determine if this trade is in Master phase
+    const isMasterPhase = challengeType === "zero-step" || 
+      (challengeType === "two-step" && equityAfter >= settings.accountBalance * (1 + settings.phase1Target / 100) * (1 + settings.phase2Target / 100)) ||
+      (challengeType === "one-step" && equityAfter >= settings.accountBalance * (1 + settings.phase1Target / 100));
 
     const tradeToAdd = {
       id: Date.now(),
@@ -983,9 +1164,25 @@ function App() {
       rewardDollars: rewardDollars.toFixed(2),
       resultDollars: result.toFixed(2),
       equityAfter: equityAfter.toFixed(2),
+      isMasterPhase: isMasterPhase,
     };
 
     setTrades((prev) => [...prev, tradeToAdd]);
+    
+    // Update master account balance if in master phase
+    if (isMasterPhase && challengeType !== "zero-step") {
+      // Update master account balance to reflect the new equity
+      setSettings((prev) => ({
+        ...prev,
+        masterAccountBalance: Number(equityAfter),
+      }));
+    } else if (challengeType === "zero-step") {
+      // For zero-step, always update master account balance
+      setSettings((prev) => ({
+        ...prev,
+        masterAccountBalance: Number(equityAfter),
+      }));
+    }
 
     // Reset form
     setNewTrade({
@@ -1019,12 +1216,39 @@ function App() {
         }
 
         // Recalculate all trades from the updated one onwards
-        let runningEquity = settings.accountBalance;
+        const challengeType = settings.challengeType || "two-step";
+        let runningEquity = challengeType === "zero-step"
+          ? (Number(settings.masterAccountBalance) || settings.accountBalance)
+          : settings.accountBalance;
+        
         if (tradeIndex > 0) {
-          const prevEquity = updatedTrades[tradeIndex - 1]?.equityAfter;
-          if (prevEquity) {
-            const parsed = Number(prevEquity);
-            runningEquity = isNaN(parsed) ? settings.accountBalance : parsed;
+          const prevTrade = updatedTrades[tradeIndex - 1];
+          if (prevTrade?.equityAfter) {
+            const parsed = Number(prevTrade.equityAfter);
+            runningEquity = isNaN(parsed) ? runningEquity : parsed;
+          }
+          
+          // Check if previous trade was in master phase
+          if (prevTrade?.isMasterPhase && challengeType !== "zero-step") {
+            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+          }
+        }
+        
+        // Check if we should be in master phase
+        let inMasterPhase = challengeType === "zero-step" || 
+          (tradeIndex > 0 && updatedTrades[tradeIndex - 1]?.isMasterPhase);
+        
+        if (!inMasterPhase && challengeType !== "zero-step") {
+          const initialBalance = settings.accountBalance;
+          const phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+          const phase2Target = phase1Target * (1 + settings.phase2Target / 100);
+          
+          if (challengeType === "two-step" && runningEquity >= phase2Target) {
+            inMasterPhase = true;
+            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+          } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+            inMasterPhase = true;
+            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
           }
         }
 
@@ -1052,13 +1276,41 @@ function App() {
             runningEquity = settings.accountBalance;
           }
 
+          // Check if this trade transitions to master phase
+          if (!inMasterPhase && challengeType !== "zero-step") {
+            const initialBalance = settings.accountBalance;
+            const phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+            const phase2Target = phase1Target * (1 + settings.phase2Target / 100);
+            
+            if (challengeType === "two-step" && runningEquity >= phase2Target) {
+              inMasterPhase = true;
+              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+              inMasterPhase = true;
+              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            }
+          }
+          
           updatedTrades[i] = {
             ...trade,
             riskDollars: riskDollars.toFixed(2),
             rewardDollars: rewardDollars.toFixed(2),
             resultDollars: result.toFixed(2),
             equityAfter: runningEquity.toFixed(2),
+            isMasterPhase: inMasterPhase,
           };
+        }
+        
+        // Update master account balance if in master phase
+        const lastTrade = updatedTrades[updatedTrades.length - 1];
+        if (lastTrade && (lastTrade.isMasterPhase || challengeType === "zero-step")) {
+          const finalEquity = Number(lastTrade.equityAfter);
+          if (!isNaN(finalEquity) && isFinite(finalEquity)) {
+            setSettings((prev) => ({
+              ...prev,
+              masterAccountBalance: finalEquity,
+            }));
+          }
         }
 
         return updatedTrades;
@@ -1073,10 +1325,41 @@ function App() {
     try {
       setTrades((prev) => {
         const filtered = prev.filter((t) => t && t.id !== id);
-        // Recalculate equity for remaining trades
-        let runningEquity = Number(settings.accountBalance) || 0;
-        return filtered.map((trade) => {
+        if (filtered.length === 0) {
+          // If no trades left, reset master account balance for zero-step
+          if (settings.challengeType === "zero-step") {
+            setSettings((prev) => ({
+              ...prev,
+              masterAccountBalance: prev.accountBalance,
+            }));
+          }
+          return filtered;
+        }
+        
+        // Recalculate equity for remaining trades using recalculateAllTrades logic
+        const challengeType = settings.challengeType || "two-step";
+        let runningEquity = challengeType === "zero-step"
+          ? (Number(settings.masterAccountBalance) || settings.accountBalance)
+          : Number(settings.accountBalance) || 0;
+        
+        const initialBalance = settings.accountBalance;
+        const phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+        const phase2Target = phase1Target * (1 + settings.phase2Target / 100);
+        let inMasterPhase = challengeType === "zero-step";
+        
+        const recalculated = filtered.map((trade) => {
           if (!trade) return trade;
+
+          // Check if we should transition to master phase
+          if (!inMasterPhase && challengeType !== "zero-step") {
+            if (challengeType === "two-step" && runningEquity >= phase2Target) {
+              inMasterPhase = true;
+              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+              inMasterPhase = true;
+              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            }
+          }
 
           const lotSize = Number(trade.lotSize) || 0;
           const riskPercent = Number(settings.riskPercent) || 0;
@@ -1095,7 +1378,9 @@ function App() {
 
           // Ensure runningEquity is valid
           if (isNaN(runningEquity) || !isFinite(runningEquity)) {
-            runningEquity = settings.accountBalance || 0;
+            runningEquity = inMasterPhase 
+              ? (Number(settings.masterAccountBalance) || settings.accountBalance)
+              : (settings.accountBalance || 0);
           }
 
           return {
@@ -1104,8 +1389,23 @@ function App() {
             rewardDollars: rewardDollars.toFixed(2),
             resultDollars: result.toFixed(2),
             equityAfter: runningEquity.toFixed(2),
+            isMasterPhase: inMasterPhase,
           };
         });
+        
+        // Update master account balance if in master phase
+        const lastTrade = recalculated[recalculated.length - 1];
+        if (lastTrade && (lastTrade.isMasterPhase || challengeType === "zero-step")) {
+          const finalEquity = Number(lastTrade.equityAfter);
+          if (!isNaN(finalEquity) && isFinite(finalEquity)) {
+            setSettings((prev) => ({
+              ...prev,
+              masterAccountBalance: finalEquity,
+            }));
+          }
+        }
+        
+        return recalculated;
       });
     } catch (error) {
       console.error("Error deleting trade:", error);
@@ -1867,30 +2167,30 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen p-4 md:p-6 lg:p-8">
+    <div className="min-h-screen p-3 sm:p-4 md:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
-        <div className="text-center mb-6">
-          <h1 className="text-3xl md:text-4xl font-bold mb-2 bg-gradient-to-r from-sky-400 to-blue-500 bg-clip-text text-transparent">
+        <div className="text-center mb-4 sm:mb-6">
+          <h1 className="text-2xl sm:text-3xl md:text-4xl lg:text-5xl font-bold mb-2 bg-gradient-to-r from-sky-400 to-blue-500 bg-clip-text text-transparent">
             FundingPips Challenge Dashboard
           </h1>
-          <p className="text-gray-400 text-sm">
+          <p className="text-gray-400 text-xs sm:text-sm md:text-base">
             Two-Step Challenge Trade Journal
           </p>
         </div>
 
         {/* Current Phase Status */}
         <div
-          className={`card mb-6 border-2 ${getPhaseBadgeColor(
+          className={`card mb-4 sm:mb-6 border-2 ${getPhaseBadgeColor(
             metrics.currentPhase
           )}`}
         >
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-            <div>
-              <div className="text-sm text-gray-400 mb-1">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4">
+            <div className="flex-1">
+              <div className="text-xs sm:text-sm text-gray-400 mb-1">
                 Current Challenge Phase
               </div>
               <div
-                className={`text-2xl font-bold ${getPhaseColor(
+                className={`text-xl sm:text-2xl md:text-3xl font-bold ${getPhaseColor(
                   metrics.currentPhase
                 )}`}
               >
@@ -1901,16 +2201,18 @@ function App() {
                   : "Master Account"}
               </div>
             </div>
-            <div className="text-right">
-              <div className="text-sm text-gray-400 mb-1">Progress</div>
-              <div className="text-xl font-bold">
-                {metrics.phaseProgress.toFixed(1)}%
+            <div className="flex gap-4 sm:gap-6 w-full sm:w-auto justify-between sm:justify-end">
+              <div className="text-center sm:text-right">
+                <div className="text-xs sm:text-sm text-gray-400 mb-1">Progress</div>
+                <div className="text-lg sm:text-xl md:text-2xl font-bold">
+                  {metrics.phaseProgress.toFixed(1)}%
+                </div>
               </div>
-            </div>
-            <div className="text-right">
-              <div className="text-sm text-gray-400 mb-1">Target</div>
-              <div className="text-xl font-bold">
-                ${Number(metrics.phaseTarget).toLocaleString()}
+              <div className="text-center sm:text-right">
+                <div className="text-xs sm:text-sm text-gray-400 mb-1">Target</div>
+                <div className="text-lg sm:text-xl md:text-2xl font-bold">
+                  ${Number(metrics.phaseTarget).toLocaleString()}
+                </div>
               </div>
             </div>
           </div>
@@ -1918,8 +2220,8 @@ function App() {
 
         {/* Drawdown Warning */}
         {metrics.drawdownWarning && (
-          <div className="mb-6 bg-red-900/30 border border-red-500 rounded-lg p-4">
-            <p className="text-red-400 font-semibold">
+          <div className="mb-4 sm:mb-6 bg-red-900/30 border border-red-500 rounded-lg p-3 sm:p-4">
+            <p className="text-red-400 font-semibold text-sm sm:text-base">
               ⚠️ Daily Drawdown Limit Exceeded: {metrics.dailyDrawdown}% (Limit:{" "}
               {settings.dailyDrawdownLimit}%)
             </p>
@@ -1927,14 +2229,14 @@ function App() {
         )}
 
         {/* Settings Section */}
-        <div className="card mb-6">
-          <h2 className="text-xl font-semibold mb-4 text-sky-400">
+        <div className="card mb-4 sm:mb-6">
+          <h2 className="text-lg sm:text-xl md:text-2xl font-semibold mb-3 sm:mb-4 text-sky-400">
             Challenge Settings
           </h2>
 
           {/* Challenge Account Size */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium mb-2">
+          <div className="mb-4 sm:mb-6">
+            <label className="block text-sm sm:text-base font-medium mb-2">
               Challenge Account Size
             </label>
             <div className="flex flex-wrap gap-2">
@@ -1942,10 +2244,10 @@ function App() {
                 <button
                   key={amount}
                   onClick={() => handleChallengeAccountChange(amount)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                  className={`px-3 py-1.5 sm:px-4 sm:py-2 rounded-lg font-medium transition-all duration-200 text-xs sm:text-sm ${
                     settings.accountBalance === amount
-                      ? "bg-sky-600 text-white"
-                      : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                      ? "bg-sky-600 text-white ring-2 ring-sky-400"
+                      : "bg-gray-700 text-gray-300 hover:bg-gray-600 active:bg-gray-500"
                   }`}
                 >
                   ${amount.toLocaleString()}
@@ -1959,37 +2261,37 @@ function App() {
           </div>
 
           {/* Challenge Type */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium mb-2">
+          <div className="mb-4 sm:mb-6">
+            <label className="block text-sm sm:text-base font-medium mb-2">
               Challenge Type
             </label>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-2">
               <button
                 onClick={() => handleChallengeTypeChange("two-step")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-medium transition-all duration-200 text-xs sm:text-sm flex-1 sm:flex-none ${
                   settings.challengeType === "two-step"
-                    ? "bg-sky-600 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    ? "bg-sky-600 text-white ring-2 ring-sky-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600 active:bg-gray-500"
                 }`}
               >
                 Two-Step (Phase 1 + Phase 2)
               </button>
               <button
                 onClick={() => handleChallengeTypeChange("one-step")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-medium transition-all duration-200 text-xs sm:text-sm flex-1 sm:flex-none ${
                   settings.challengeType === "one-step"
-                    ? "bg-sky-600 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    ? "bg-sky-600 text-white ring-2 ring-sky-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600 active:bg-gray-500"
                 }`}
               >
                 One-Step (Phase 1 Only)
               </button>
               <button
                 onClick={() => handleChallengeTypeChange("zero-step")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-medium transition-all duration-200 text-xs sm:text-sm flex-1 sm:flex-none ${
                   settings.challengeType === "zero-step"
-                    ? "bg-sky-600 text-white"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    ? "bg-sky-600 text-white ring-2 ring-sky-400"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600 active:bg-gray-500"
                 }`}
               >
                 Zero-Step (Direct Master)
@@ -1998,40 +2300,40 @@ function App() {
           </div>
 
           {/* Risk Management */}
-          <div className="mb-6">
-            <label className="block text-sm font-medium mb-2">
+          <div className="mb-4 sm:mb-6">
+            <label className="block text-sm sm:text-base font-medium mb-2">
               Risk Per Trade
-              <span className="ml-2 text-xs font-normal text-gray-400">
+              <span className="block sm:inline sm:ml-2 text-xs font-normal text-gray-400 mt-1 sm:mt-0">
                 (Choose your risk level - lot size will auto-calculate)
               </span>
             </label>
-            <div className="flex flex-wrap gap-2 mb-3">
+            <div className="flex flex-col sm:flex-row flex-wrap gap-2 mb-3">
               <button
                 onClick={() => handleRiskPreset("safe")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-medium transition-all duration-200 text-xs sm:text-sm flex-1 sm:flex-none ${
                   settings.riskPreset === "safe"
                     ? "bg-emerald-600 text-white ring-2 ring-emerald-400"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600 active:bg-gray-500"
                 }`}
               >
                 🛡️ Safe (0.25%)
               </button>
               <button
                 onClick={() => handleRiskPreset("balanced")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-medium transition-all duration-200 text-xs sm:text-sm flex-1 sm:flex-none ${
                   settings.riskPreset === "balanced"
                     ? "bg-blue-600 text-white ring-2 ring-blue-400"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600 active:bg-gray-500"
                 }`}
               >
                 ⚖️ Balanced (0.5%)
               </button>
               <button
                 onClick={() => handleRiskPreset("aggressive")}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                className={`px-3 py-2 sm:px-4 sm:py-2 rounded-lg font-medium transition-all duration-200 text-xs sm:text-sm flex-1 sm:flex-none ${
                   settings.riskPreset === "aggressive"
                     ? "bg-red-600 text-white ring-2 ring-red-400"
-                    : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+                    : "bg-gray-700 text-gray-300 hover:bg-gray-600 active:bg-gray-500"
                 }`}
               >
                 ⚡ Aggressive (1%)
@@ -2160,9 +2462,9 @@ function App() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1">
+              <label className="block text-xs sm:text-sm font-medium mb-1">
                 Risk % per Trade
               </label>
               <input
@@ -2253,7 +2555,7 @@ function App() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">
+              <label className="block text-xs sm:text-sm font-medium mb-1">
                 Take-Profit (Pips)
               </label>
               <input
@@ -2445,7 +2747,7 @@ function App() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">
+              <label className="block text-xs sm:text-sm font-medium mb-1">
                 Master Account Balance ($)
               </label>
               <input
@@ -2487,54 +2789,101 @@ function App() {
                 For master account tracking
               </p>
             </div>
+            {metrics.currentPhase === "Master" || settings.challengeType === "zero-step" ? (
+              <div>
+                <label className="block text-xs sm:text-sm font-medium mb-1">
+                  Monthly Target ($)
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  className="input w-full"
+                  value={inputValues.monthlyTarget !== undefined ? inputValues.monthlyTarget : (settings.monthlyTarget || "")}
+                  onChange={(e) => {
+                    let val = e.target.value;
+                    if (val === "") {
+                      setInputValues({ ...inputValues, monthlyTarget: "" });
+                      return;
+                    }
+                    val = val.replace(/[^\d.]/g, "");
+                    if (val.length > 1 && val[0] === "0" && val[1] !== ".") {
+                      val = val.replace(/^0+/, "");
+                    }
+                    if (val === "" || val === ".") {
+                      setInputValues({ ...inputValues, monthlyTarget: val });
+                      return;
+                    }
+                    const numValue = Number(val);
+                    if (!isNaN(numValue) && numValue >= 0) {
+                      setInputValues({ ...inputValues, monthlyTarget: val });
+                      handleSettingChange("monthlyTarget", numValue);
+                    }
+                  }}
+                  onFocus={(e) => {
+                    setInputValues({ ...inputValues, monthlyTarget: e.target.value });
+                  }}
+                  onBlur={(e) => {
+                    const newInputValues = { ...inputValues };
+                    delete newInputValues.monthlyTarget;
+                    setInputValues(newInputValues);
+                  }}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Set monthly profit target for master account (0 to disable)
+                </p>
+              </div>
+            ) : null}
           </div>
         </div>
 
         {/* Dashboard Metrics */}
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
-          <div className="card text-center">
-            <div className="text-sm text-gray-400 mb-1">Balance</div>
-            <div className="text-xl font-bold">
-              ${settings.accountBalance.toLocaleString()}
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-3 md:gap-4 mb-4 sm:mb-6">
+          <div className="card text-center p-2 sm:p-3">
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">Balance</div>
+            <div className="text-base sm:text-lg md:text-xl font-bold break-words">
+              ${(settings.challengeType === "zero-step" 
+                ? Number(settings.masterAccountBalance) 
+                : settings.accountBalance).toLocaleString()}
             </div>
           </div>
-          <div className="card text-center">
-            <div className="text-sm text-gray-400 mb-1">Equity</div>
-            <div className="text-xl font-bold">
+          <div className="card text-center p-2 sm:p-3">
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">Equity</div>
+            <div className="text-base sm:text-lg md:text-xl font-bold break-words">
               ${Number(metrics.currentEquity).toLocaleString()}
             </div>
           </div>
-          <div className="card text-center">
-            <div className="text-sm text-gray-400 mb-1">Win Rate</div>
-            <div className="text-xl font-bold">{metrics.winRate}%</div>
+          <div className="card text-center p-2 sm:p-3">
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">Win Rate</div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.winRate}%</div>
           </div>
-          <div className="card text-center">
-            <div className="text-sm text-gray-400 mb-1">Expectancy</div>
-            <div className="text-xl font-bold">{metrics.expectancy}</div>
+          <div className="card text-center p-2 sm:p-3">
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">Expectancy</div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.expectancy}</div>
           </div>
-          <div className="card text-center">
-            <div className="text-sm text-gray-400 mb-1">Grade</div>
+          <div className="card text-center p-2 sm:p-3">
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">Grade</div>
             <div
-              className={`text-2xl font-bold ${getGradeColor(
+              className={`text-xl sm:text-2xl md:text-3xl font-bold ${getGradeColor(
                 metrics.strategyGrade
               )}`}
             >
               {metrics.strategyGrade}
             </div>
           </div>
-          <div className="card text-center">
-            <div className="text-sm text-gray-400 mb-1">Lot Size</div>
-            <div className="text-xl font-bold">{metrics.suggestedLotSize}</div>
+          <div className="card text-center p-2 sm:p-3">
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">Lot Size</div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.suggestedLotSize}</div>
           </div>
-          <div className="card text-center">
-            <div className="text-sm text-gray-400 mb-1">Trades</div>
-            <div className="text-xl font-bold">{metrics.totalTrades}</div>
+          <div className="card text-center p-2 sm:p-3">
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">Trades</div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.totalTrades}</div>
           </div>
         </div>
 
         {/* Progress Bars */}
-        <div className="card mb-6">
-          <h2 className="text-xl font-semibold mb-4 text-sky-400">
+        <div className="card mb-4 sm:mb-6">
+          <h2 className="text-lg sm:text-xl md:text-2xl font-semibold mb-3 sm:mb-4 text-sky-400">
             Challenge Progress
           </h2>
           <div className="space-y-4">
@@ -2599,7 +2948,7 @@ function App() {
                 </p>
               </div>
             )}
-            {metrics.currentPhase === "Master" &&
+            {(metrics.currentPhase === "Master" || settings.challengeType === "zero-step") &&
               settings.masterAccountBalance > 0 && (
                 <div>
                   <div className="flex justify-between mb-2">
@@ -2614,19 +2963,41 @@ function App() {
                   </div>
                   <p className="text-xs text-gray-500 mt-1">
                     Master Account Balance: $
-                    {Number(settings.masterAccountBalance).toLocaleString()}
+                    {Number(metrics.currentEquity).toLocaleString()}
                   </p>
+                  {Number(settings.monthlyTarget) > 0 && (
+                    <div className="mt-3">
+                      <div className="flex justify-between mb-2">
+                        <span className="text-sm font-medium">Monthly Target</span>
+                        <span className="text-sm text-emerald-400">
+                          {Number(metrics.monthlyTargetProgress) > 0 ? `${metrics.monthlyTargetProgress}%` : "0%"}
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-700 rounded-full h-3">
+                        <div
+                          className="bg-sky-500 h-3 rounded-full transition-all"
+                          style={{ 
+                            width: `${Math.min(Number(metrics.monthlyTargetProgress) || 0, 100)}%` 
+                          }}
+                        />
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Target: ${Number(settings.monthlyTarget).toLocaleString()} | 
+                        Progress: ${(Number(metrics.currentEquity) - Number(metrics.monthlyStartingBalance)).toLocaleString()} / ${Number(settings.monthlyTarget).toLocaleString()}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
           </div>
         </div>
 
         {/* Equity Curve Chart */}
-        <div className="card mb-6">
-          <h2 className="text-xl font-semibold mb-4 text-sky-400">
+        <div className="card mb-4 sm:mb-6">
+          <h2 className="text-lg sm:text-xl md:text-2xl font-semibold mb-3 sm:mb-4 text-sky-400">
             Equity Curve
           </h2>
-          <div className="h-64 md:h-80">
+          <div className="h-48 sm:h-64 md:h-80 lg:h-96">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={equityCurve}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
@@ -2653,56 +3024,65 @@ function App() {
         </div>
 
         {/* Trade Journal */}
-        <div className="card mb-6">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-semibold text-sky-400">
+        <div className="card mb-4 sm:mb-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4 mb-4">
+            <h2 className="text-lg sm:text-xl md:text-2xl font-semibold text-sky-400">
               Trade Journal
             </h2>
-            <div className="flex flex-wrap gap-2 items-center">
+            <div className="flex flex-wrap gap-2 items-center w-full sm:w-auto">
               <button
                 onClick={() => setShowAddTradeForm(!showAddTradeForm)}
-                className="btn-primary"
+                className="btn-primary flex-1 sm:flex-none"
               >
                 {showAddTradeForm ? "Cancel" : "Add Trade"}
               </button>
               <button
                 onClick={exportToExcel}
-                className="btn-secondary flex items-center gap-2"
+                className="btn-secondary flex items-center gap-1 sm:gap-2 text-xs sm:text-sm"
                 title="Create a new Excel file with your trades"
               >
-                📊 Create Excel
+                <span className="hidden sm:inline">📊</span>
+                <span className="sm:hidden">📊</span>
+                <span className="hidden sm:inline">Create Excel</span>
+                <span className="sm:hidden">Excel</span>
               </button>
               <button
                 onClick={uploadToExistingExcel}
-                className="btn-secondary flex items-center gap-2"
+                className="btn-secondary flex items-center gap-1 sm:gap-2 text-xs sm:text-sm"
                 title="Upload trades to an existing Excel file (duplicates will be skipped)"
               >
-                📤 Upload to Excel
+                <span className="hidden sm:inline">📤</span>
+                <span className="sm:hidden">📤</span>
+                <span className="hidden sm:inline">Upload to Excel</span>
+                <span className="sm:hidden">Upload</span>
               </button>
               <button
                 onClick={importFromExcel}
-                className="btn-secondary flex items-center gap-2"
+                className="btn-secondary flex items-center gap-1 sm:gap-2 text-xs sm:text-sm"
                 title="Import trades from an Excel file"
               >
-                📥 Import Excel
+                <span className="hidden sm:inline">📥</span>
+                <span className="sm:hidden">📥</span>
+                <span className="hidden sm:inline">Import Excel</span>
+                <span className="sm:hidden">Import</span>
               </button>
             </div>
           </div>
 
           {/* Add Trade Form */}
           {showAddTradeForm && (
-            <div className="mb-6 p-4 bg-gray-700/30 rounded-lg border border-gray-600">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-sky-400">
+            <div className="mb-4 sm:mb-6 p-3 sm:p-4 bg-gray-700/30 rounded-lg border border-gray-600">
+              <div className="flex justify-between items-center mb-3 sm:mb-4">
+                <h3 className="text-base sm:text-lg md:text-xl font-semibold text-sky-400">
                   Add New Trade
                 </h3>
                 <div className="text-xs text-gray-400 bg-gray-800/50 px-3 py-1 rounded">
                   💡 Lot size auto-calculated from your risk settings
                 </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
                 <div>
-                  <label className="block text-sm font-medium mb-1">
+                  <label className="block text-xs sm:text-sm font-medium mb-1">
                     Date *
                   </label>
                   <DatePicker
@@ -2713,9 +3093,9 @@ function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">
+                  <label className="block text-xs sm:text-sm font-medium mb-1">
                     Lot Size *
-                    <span className="ml-2 text-xs font-normal text-gray-400">
+                    <span className="block sm:inline sm:ml-2 text-xs font-normal text-gray-400 mt-0.5 sm:mt-0">
                       (Auto-calculated from your risk)
                     </span>
                   </label>
@@ -2748,14 +3128,14 @@ function App() {
                           lotSize: calculateSuggestedLotSize.lotSize,
                         })
                       }
-                      className="px-3 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-medium whitespace-nowrap"
+                      className="px-2 sm:px-3 py-2 bg-sky-600 hover:bg-sky-700 active:bg-sky-800 text-white rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap transition-all duration-200"
                       title="Use suggested lot size"
                     >
                       Auto
                     </button>
                   </div>
-                  <div className="mt-2 p-2 bg-gray-800/50 rounded border border-gray-700">
-                    <div className="text-xs space-y-1">
+                  <div className="mt-2 p-2 sm:p-3 bg-gray-800/50 rounded border border-gray-700">
+                    <div className="text-xs sm:text-sm space-y-1">
                       <div className="flex justify-between">
                         <span className="text-gray-400">Current Equity:</span>
                         <span className="text-white font-medium">
@@ -2842,13 +3222,13 @@ function App() {
                       ))}
                     </datalist>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
                     <button
                       type="button"
                       onClick={() =>
                         setNewTrade({ ...newTrade, entry: "XAUUSD" })
                       }
-                      className="px-2 py-1 text-xs bg-yellow-600/20 hover:bg-yellow-600/30 text-yellow-400 rounded border border-yellow-600/30"
+                      className="px-2 py-1 text-xs bg-yellow-600/20 hover:bg-yellow-600/30 active:bg-yellow-600/40 text-yellow-400 rounded border border-yellow-600/30 transition-all duration-200"
                     >
                       XAUUSD
                     </button>
@@ -2857,7 +3237,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, entry: "EUR/USD" })
                       }
-                      className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded"
+                      className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-gray-300 rounded transition-all duration-200"
                     >
                       EUR/USD
                     </button>
@@ -2866,7 +3246,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, entry: "GBP/USD" })
                       }
-                      className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded"
+                      className="px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-gray-300 rounded transition-all duration-200"
                     >
                       GBP/USD
                     </button>
@@ -2875,7 +3255,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, entry: "BTC/USD" })
                       }
-                      className="px-2 py-1 text-xs bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 rounded border border-orange-600/30"
+                      className="px-2 py-1 text-xs bg-orange-600/20 hover:bg-orange-600/30 active:bg-orange-600/40 text-orange-400 rounded border border-orange-600/30 transition-all duration-200"
                     >
                       BTC/USD
                     </button>
@@ -2884,7 +3264,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, entry: "ETH/USD" })
                       }
-                      className="px-2 py-1 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded border border-blue-600/30"
+                      className="px-2 py-1 text-xs bg-blue-600/20 hover:bg-blue-600/30 active:bg-blue-600/40 text-blue-400 rounded border border-blue-600/30 transition-all duration-200"
                     >
                       ETH/USD
                     </button>
@@ -2894,7 +3274,7 @@ function App() {
                   </p>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">
+                  <label className="block text-xs sm:text-sm font-medium mb-1">
                     Outcome
                   </label>
                   <select
@@ -2908,8 +3288,8 @@ function App() {
                     <option value="Loss">Loss</option>
                   </select>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">
+                <div className="sm:col-span-2 lg:col-span-1">
+                  <label className="block text-xs sm:text-sm font-medium mb-1">
                     Notes
                     <span className="ml-2 text-xs font-normal text-gray-400">
                       (Optional)
@@ -2932,13 +3312,13 @@ function App() {
                       ))}
                     </datalist>
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-2 flex flex-wrap gap-1.5">
                     <button
                       type="button"
                       onClick={() =>
                         setNewTrade({ ...newTrade, notes: "Very Good" })
                       }
-                      className="px-2 py-1 text-xs bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 rounded border border-emerald-600/30"
+                      className="px-2 py-1 text-xs bg-emerald-600/20 hover:bg-emerald-600/30 active:bg-emerald-600/40 text-emerald-400 rounded border border-emerald-600/30 transition-all duration-200"
                     >
                       Very Good
                     </button>
@@ -2947,14 +3327,14 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, notes: "Good" })
                       }
-                      className="px-2 py-1 text-xs bg-green-600/20 hover:bg-green-600/30 text-green-400 rounded border border-green-600/30"
+                      className="px-2 py-1 text-xs bg-green-600/20 hover:bg-green-600/30 active:bg-green-600/40 text-green-400 rounded border border-green-600/30 transition-all duration-200"
                     >
                       Good
                     </button>
                     <button
                       type="button"
                       onClick={() => setNewTrade({ ...newTrade, notes: "Bad" })}
-                      className="px-2 py-1 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-400 rounded border border-red-600/30"
+                      className="px-2 py-1 text-xs bg-red-600/20 hover:bg-red-600/30 active:bg-red-600/40 text-red-400 rounded border border-red-600/30 transition-all duration-200"
                     >
                       Bad
                     </button>
@@ -2963,7 +3343,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, notes: "Followed Plan" })
                       }
-                      className="px-2 py-1 text-xs bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 rounded border border-blue-600/30"
+                      className="px-2 py-1 text-xs bg-blue-600/20 hover:bg-blue-600/30 active:bg-blue-600/40 text-blue-400 rounded border border-blue-600/30 transition-all duration-200"
                     >
                       Followed Plan
                     </button>
@@ -2972,7 +3352,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, notes: "Emotional Trade" })
                       }
-                      className="px-2 py-1 text-xs bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 rounded border border-orange-600/30"
+                      className="px-2 py-1 text-xs bg-orange-600/20 hover:bg-orange-600/30 active:bg-orange-600/40 text-orange-400 rounded border border-orange-600/30 transition-all duration-200"
                     >
                       Emotional Trade
                     </button>
@@ -2981,7 +3361,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, notes: "Requires Review" })
                       }
-                      className="px-2 py-1 text-xs bg-yellow-600/20 hover:bg-yellow-600/30 text-yellow-400 rounded border border-yellow-600/30"
+                      className="px-2 py-1 text-xs bg-yellow-600/20 hover:bg-yellow-600/30 active:bg-yellow-600/40 text-yellow-400 rounded border border-yellow-600/30 transition-all duration-200"
                     >
                       Requires Review
                     </button>
@@ -2990,7 +3370,7 @@ function App() {
                       onClick={() =>
                         setNewTrade({ ...newTrade, notes: "Well Executed" })
                       }
-                      className="px-2 py-1 text-xs bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 rounded border border-purple-600/30"
+                      className="px-2 py-1 text-xs bg-purple-600/20 hover:bg-purple-600/30 active:bg-purple-600/40 text-purple-400 rounded border border-purple-600/30 transition-all duration-200"
                     >
                       Well Executed
                     </button>
@@ -3001,48 +3381,48 @@ function App() {
                 </div>
               </div>
               <div className="mt-4 flex justify-end">
-                <button onClick={handleAddTrade} className="btn-primary">
+                <button onClick={handleAddTrade} className="btn-primary w-full sm:w-auto">
                   Save Trade
                 </button>
               </div>
             </div>
           )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1000px]">
+          <div className="overflow-x-auto scrollbar-thin">
+            <table className="w-full min-w-[800px] sm:min-w-[1000px]">
               <thead>
                 <tr className="border-b border-gray-700">
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Date
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Session
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Entry
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Lot Size
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Outcome
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Risk $
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Reward $
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Result $
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Equity After
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Notes
                   </th>
-                  <th className="text-left p-2 text-sm font-medium text-gray-400">
+                  <th className="text-left p-2 text-xs sm:text-sm font-medium text-gray-400 whitespace-nowrap">
                     Actions
                   </th>
                 </tr>
@@ -3050,7 +3430,7 @@ function App() {
               <tbody>
                 {trades.length === 0 ? (
                   <tr>
-                    <td colSpan="11" className="text-center p-8 text-gray-500">
+                    <td colSpan="11" className="text-center p-6 sm:p-8 text-gray-500 text-sm sm:text-base">
                       No trades yet. Click "Add Trade" to get started.
                     </td>
                   </tr>
@@ -3180,7 +3560,7 @@ function App() {
                       <td className="p-2">
                         <button
                           onClick={() => deleteTrade(trade.id)}
-                          className="text-red-400 hover:text-red-300 text-sm"
+                          className="text-red-400 hover:text-red-300 active:text-red-200 text-xs sm:text-sm font-medium transition-colors duration-200 px-2 py-1 rounded hover:bg-red-900/20"
                         >
                           Delete
                         </button>
