@@ -15,6 +15,243 @@ const STORAGE_KEYS = {
   TRADES: "propFirmTrades",
 };
 
+// ============================================================================
+// CANONICAL DATA MODEL - SINGLE SOURCE OF TRUTH
+// ============================================================================
+
+/**
+ * Canonical Trade data model matching Excel structure exactly
+ * This is the single source of truth for all trade data
+ */
+const CANONICAL_TRADE_COLUMNS = [
+  "Date",
+  "Session (IST)",
+  "Pair",
+  "Setup Type",
+  "Direction",
+  "Entry Price",
+  "Stop Loss Price",
+  "Take Profit Price",
+  "Stop Loss (pips)",
+  "Take Profit (pips)",
+  "Lot Size",
+  "Risk $",
+  "Reward $",
+  "Result $",
+  "Outcome",
+  "Rule Followed?",
+  "Equity After Trade",
+  "Notes",
+];
+
+/**
+ * Excel sheet names in exact order
+ */
+const EXCEL_SHEET_NAMES = [
+  "Dashboard",
+  "Trade_Journal",
+  "Stats",
+  "Progress",
+  "READ ME",
+  "1-PAGE GUIDE",
+];
+
+/**
+ * Convert Trade to Excel row (strict mapping)
+ * Trade object must have all canonical fields
+ */
+const tradeToExcelRow = (trade) => {
+  return [
+    trade.date,
+    trade.session,
+    trade.pair,
+    trade.setupType,
+    trade.direction,
+    trade.entryPrice === "" ? "" : trade.entryPrice,
+    trade.stopLossPrice === "" ? "" : trade.stopLossPrice,
+    trade.takeProfitPrice === "" ? "" : trade.takeProfitPrice,
+    trade.stopLossPips,
+    trade.takeProfitPips,
+    trade.lotSize,
+    trade.riskAmount,
+    trade.rewardAmount,
+    trade.resultAmount,
+    trade.outcome,
+    trade.ruleFollowed,
+    trade.equityAfter,
+    trade.notes,
+  ];
+};
+
+/**
+ * Convert Excel row to Trade (strict parsing)
+ * Returns null if row is invalid or empty
+ */
+const excelRowToTrade = (row, columnIndices, rowIndex) => {
+  // Skip warning rows
+  const dateValue = String(row[columnIndices["Date"]] || "").trim();
+  if (
+    dateValue.includes("⚠️") ||
+    dateValue.includes("DO NOT EDIT") ||
+    dateValue === ""
+  ) {
+    return null;
+  }
+
+  try {
+    const trade = {
+      id: Date.now() + rowIndex + Math.random(), // Generate unique ID
+      date: dateValue,
+      session: String(row[columnIndices["Session (IST)"]] || "").trim(),
+      pair: String(row[columnIndices["Pair"]] || "").trim(),
+      setupType: String(row[columnIndices["Setup Type"]] || "").trim(),
+      direction: String(row[columnIndices["Direction"]] || "").trim(),
+      entryPrice: parseFloat(row[columnIndices["Entry Price"]]) || "",
+      stopLossPrice: parseFloat(row[columnIndices["Stop Loss Price"]]) || "",
+      takeProfitPrice:
+        parseFloat(row[columnIndices["Take Profit Price"]]) || "",
+      stopLossPips: parseFloat(row[columnIndices["Stop Loss (pips)"]]) || 0,
+      takeProfitPips: parseFloat(row[columnIndices["Take Profit (pips)"]]) || 0,
+      lotSize: parseFloat(row[columnIndices["Lot Size"]]) || 0,
+      riskAmount: parseFloat(row[columnIndices["Risk $"]]) || 0,
+      rewardAmount: parseFloat(row[columnIndices["Reward $"]]) || 0,
+      resultAmount: parseFloat(row[columnIndices["Result $"]]) || 0,
+      outcome: String(row[columnIndices["Outcome"]] || "").trim(),
+      ruleFollowed: String(row[columnIndices["Rule Followed?"]] || "").trim(),
+      equityAfter: parseFloat(row[columnIndices["Equity After Trade"]]) || 0,
+      notes: String(row[columnIndices["Notes"]] || "").trim(),
+    };
+
+    // Validate required fields
+    if (!trade.date || !trade.pair) {
+      return null;
+    }
+
+    return trade;
+  } catch (error) {
+    console.error(`Error parsing row ${rowIndex}:`, error);
+    return null;
+  }
+};
+
+/**
+ * Validate Excel structure - FAIL FAST if structure doesn't match
+ */
+const validateExcelStructure = (workbook, sheetNames) => {
+  // Check sheet names and order
+  const expectedSheetNames = Array.isArray(sheetNames)
+    ? sheetNames
+    : EXCEL_SHEET_NAMES;
+  if (workbook.SheetNames.length !== expectedSheetNames.length) {
+    return {
+      valid: false,
+      error: `Expected ${expectedSheetNames.length} sheets, found ${workbook.SheetNames.length}`,
+    };
+  }
+
+  for (let i = 0; i < expectedSheetNames.length; i++) {
+    if (workbook.SheetNames[i] !== expectedSheetNames[i]) {
+      return {
+        valid: false,
+        error: `Sheet ${i + 1} must be "${expectedSheetNames[i]}", found "${
+          workbook.SheetNames[i]
+        }"`,
+      };
+    }
+  }
+
+  // Validate Trade_Journal sheet structure
+  const tradeJournalSheet = workbook.Sheets["Trade_Journal"];
+  if (!tradeJournalSheet) {
+    return { valid: false, error: "Trade_Journal sheet not found" };
+  }
+
+  const data = XLSX.utils.sheet_to_json(tradeJournalSheet, {
+    header: 1,
+    defval: "",
+    raw: false,
+  });
+
+  if (data.length < 1) {
+    return { valid: false, error: "Trade_Journal sheet is empty" };
+  }
+
+  const headers = (data[0] || []).map((h) => String(h || "").trim());
+  const expectedHeaders = [...CANONICAL_TRADE_COLUMNS];
+
+  if (headers.length !== expectedHeaders.length) {
+    return {
+      valid: false,
+      error: `Trade_Journal must have ${expectedHeaders.length} columns, found ${headers.length}`,
+    };
+  }
+
+  // Strict column name matching
+  for (let i = 0; i < expectedHeaders.length; i++) {
+    if (headers[i] !== expectedHeaders[i]) {
+      return {
+        valid: false,
+        error: `Column ${i + 1} must be "${expectedHeaders[i]}", found "${
+          headers[i]
+        }"`,
+      };
+    }
+  }
+
+  return { valid: true };
+};
+
+/**
+ * Adapter: Convert current app trade model to canonical trade model
+ */
+const appTradeToCanonical = (appTrade, settings) => {
+  return {
+    id: appTrade.id || Date.now(),
+    date: appTrade.date || "",
+    session: appTrade.session || "London",
+    pair: appTrade.entry || "XAUUSD",
+    setupType: "",
+    direction: "",
+    entryPrice: "",
+    stopLossPrice: "",
+    takeProfitPrice: "",
+    stopLossPips: settings.stopLossPips || 0,
+    takeProfitPips: settings.takeProfitPips || 0,
+    lotSize: parseFloat(appTrade.lotSize) || 0,
+    riskAmount: parseFloat(appTrade.riskDollars) || 0,
+    rewardAmount: parseFloat(appTrade.rewardDollars) || 0,
+    resultAmount: parseFloat(appTrade.resultDollars) || 0,
+    outcome:
+      appTrade.outcome === "Win"
+        ? "Win"
+        : appTrade.outcome === "Loss"
+        ? "Loss"
+        : "",
+    ruleFollowed: "",
+    equityAfter: parseFloat(appTrade.equityAfter) || 0,
+    notes: appTrade.notes || "",
+  };
+};
+
+/**
+ * Adapter: Convert canonical trade model to current app trade model
+ */
+const canonicalTradeToApp = (canonicalTrade) => {
+  return {
+    id: canonicalTrade.id,
+    date: canonicalTrade.date,
+    session: canonicalTrade.session,
+    entry: canonicalTrade.pair,
+    lotSize: canonicalTrade.lotSize.toString(),
+    outcome: canonicalTrade.outcome || "Win",
+    notes: canonicalTrade.notes,
+    riskDollars: canonicalTrade.riskAmount.toFixed(2),
+    rewardDollars: canonicalTrade.rewardAmount.toFixed(2),
+    resultDollars: canonicalTrade.resultAmount.toFixed(2),
+    equityAfter: canonicalTrade.equityAfter.toFixed(2),
+  };
+};
+
 const RISK_PRESETS = {
   safe: 0.25,
   balanced: 0.5,
@@ -467,9 +704,10 @@ function App() {
   const equityCurve = useMemo(() => {
     try {
       const challengeType = settings.challengeType || "two-step";
-      let currentEquity = challengeType === "zero-step"
-        ? (Number(settings.masterAccountBalance) || settings.accountBalance)
-        : Number(settings.accountBalance) || 0;
+      let currentEquity =
+        challengeType === "zero-step"
+          ? Number(settings.masterAccountBalance) || settings.accountBalance
+          : Number(settings.accountBalance) || 0;
       const curve = [{ trade: 0, equity: currentEquity }];
 
       trades.forEach((trade, index) => {
@@ -486,27 +724,33 @@ function App() {
     } catch (error) {
       console.error("Error calculating equity curve:", error);
       const challengeType = settings.challengeType || "two-step";
-      const initialEquity = challengeType === "zero-step"
-        ? (Number(settings.masterAccountBalance) || settings.accountBalance)
-        : settings.accountBalance;
+      const initialEquity =
+        challengeType === "zero-step"
+          ? Number(settings.masterAccountBalance) || settings.accountBalance
+          : settings.accountBalance;
       return [{ trade: 0, equity: initialEquity || 0 }];
     }
-  }, [trades, settings.accountBalance, settings.masterAccountBalance, settings.challengeType]);
+  }, [
+    trades,
+    settings.accountBalance,
+    settings.masterAccountBalance,
+    settings.challengeType,
+  ]);
 
   // Helper function to get starting balance based on challenge type and phase
   const getStartingBalance = (settings, currentEquity) => {
     const challengeType = settings.challengeType || "two-step";
-    
+
     // For zero-step (direct master), always use masterAccountBalance
     if (challengeType === "zero-step") {
       return Number(settings.masterAccountBalance) || 0;
     }
-    
+
     // For other challenge types, determine if we're in Master phase
     const initialBalance = settings.accountBalance;
     let phase1Target = 0;
     let phase2Target = 0;
-    
+
     if (challengeType === "two-step") {
       phase1Target = initialBalance * (1 + settings.phase1Target / 100);
       phase2Target = phase1Target * (1 + settings.phase2Target / 100);
@@ -521,7 +765,7 @@ function App() {
         return Number(settings.masterAccountBalance) || initialBalance;
       }
     }
-    
+
     // Not in Master phase, use challenge account balance
     return initialBalance;
   };
@@ -593,9 +837,10 @@ function App() {
       // Phase progress and detection based on challenge type
       // For zero-step, use masterAccountBalance as initial balance
       const challengeType = settings.challengeType || "two-step";
-      const initialBalance = challengeType === "zero-step" 
-        ? (Number(settings.masterAccountBalance) || settings.accountBalance)
-        : settings.accountBalance;
+      const initialBalance =
+        challengeType === "zero-step"
+          ? Number(settings.masterAccountBalance) || settings.accountBalance
+          : settings.accountBalance;
 
       let phase1Target = 0;
       let phase2Target = 0;
@@ -762,7 +1007,7 @@ function App() {
       let monthlyTargetProgress = 0;
       let monthlyTargetAmount = 0;
       let monthlyStartingBalance = 0;
-      
+
       if (currentPhase === "Master" || challengeType === "zero-step") {
         monthlyTargetAmount = Number(settings.monthlyTarget) || 0;
         if (monthlyTargetAmount > 0) {
@@ -770,38 +1015,44 @@ function App() {
           const now = new Date();
           const currentMonth = now.getMonth();
           const currentYear = now.getFullYear();
-          
+
           // Find the first trade of the current month or the master account balance
           const currentMonthTrades = trades.filter((t) => {
             if (!t || !t.date) return false;
             try {
               const tradeDate = new Date(t.date);
-              return tradeDate.getMonth() === currentMonth && 
-                     tradeDate.getFullYear() === currentYear &&
-                     (t.isMasterPhase || challengeType === "zero-step");
+              return (
+                tradeDate.getMonth() === currentMonth &&
+                tradeDate.getFullYear() === currentYear &&
+                (t.isMasterPhase || challengeType === "zero-step")
+              );
             } catch {
               return false;
             }
           });
-          
+
           if (currentMonthTrades.length > 0) {
             // Find the balance before the first trade of this month
             const firstMonthTradeIndex = trades.findIndex((t) => {
               if (!t || !t.date) return false;
               try {
                 const tradeDate = new Date(t.date);
-                return tradeDate.getMonth() === currentMonth && 
-                       tradeDate.getFullYear() === currentYear &&
-                       (t.isMasterPhase || challengeType === "zero-step");
+                return (
+                  tradeDate.getMonth() === currentMonth &&
+                  tradeDate.getFullYear() === currentYear &&
+                  (t.isMasterPhase || challengeType === "zero-step")
+                );
               } catch {
                 return false;
               }
             });
-            
+
             if (firstMonthTradeIndex > 0) {
               const prevTrade = trades[firstMonthTradeIndex - 1];
               if (prevTrade && prevTrade.equityAfter) {
-                monthlyStartingBalance = Number(prevTrade.equityAfter) || Number(settings.masterAccountBalance);
+                monthlyStartingBalance =
+                  Number(prevTrade.equityAfter) ||
+                  Number(settings.masterAccountBalance);
               } else {
                 monthlyStartingBalance = Number(settings.masterAccountBalance);
               }
@@ -812,12 +1063,13 @@ function App() {
             // No trades this month, use master account balance
             monthlyStartingBalance = Number(settings.masterAccountBalance);
           }
-          
+
           // Calculate progress: (current equity - starting balance) / monthly target * 100
           const progressAmount = currentEquity - monthlyStartingBalance;
-          monthlyTargetProgress = monthlyTargetAmount > 0
-            ? Math.min((progressAmount / monthlyTargetAmount) * 100, 100)
-            : 0;
+          monthlyTargetProgress =
+            monthlyTargetAmount > 0
+              ? Math.min((progressAmount / monthlyTargetAmount) * 100, 100)
+              : 0;
         }
       }
 
@@ -872,17 +1124,21 @@ function App() {
     try {
       setTrades((prev) => {
         if (prev.length === 0) return prev;
-        
+
         const challengeType = newSettings.challengeType || "two-step";
-        let runningEquity = challengeType === "zero-step"
-          ? (Number(newSettings.masterAccountBalance) || newSettings.accountBalance)
-          : Number(newSettings.accountBalance) || 0;
-        
+        let runningEquity =
+          challengeType === "zero-step"
+            ? Number(newSettings.masterAccountBalance) ||
+              newSettings.accountBalance
+            : Number(newSettings.accountBalance) || 0;
+
         const initialBalance = newSettings.accountBalance;
-        const phase1Target = initialBalance * (1 + newSettings.phase1Target / 100);
-        const phase2Target = phase1Target * (1 + newSettings.phase2Target / 100);
+        const phase1Target =
+          initialBalance * (1 + newSettings.phase1Target / 100);
+        const phase2Target =
+          phase1Target * (1 + newSettings.phase2Target / 100);
         let inMasterPhase = challengeType === "zero-step";
-        
+
         return prev.map((trade) => {
           if (!trade) return trade;
 
@@ -890,10 +1146,15 @@ function App() {
           if (!inMasterPhase && challengeType !== "zero-step") {
             if (challengeType === "two-step" && runningEquity >= phase2Target) {
               inMasterPhase = true;
-              runningEquity = Number(newSettings.masterAccountBalance) || runningEquity;
-            } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+              runningEquity =
+                Number(newSettings.masterAccountBalance) || runningEquity;
+            } else if (
+              challengeType === "one-step" &&
+              runningEquity >= phase1Target
+            ) {
               inMasterPhase = true;
-              runningEquity = Number(newSettings.masterAccountBalance) || runningEquity;
+              runningEquity =
+                Number(newSettings.masterAccountBalance) || runningEquity;
             }
           }
 
@@ -914,9 +1175,10 @@ function App() {
 
           // Ensure runningEquity is valid
           if (isNaN(runningEquity) || !isFinite(runningEquity)) {
-            runningEquity = inMasterPhase 
-              ? (Number(newSettings.masterAccountBalance) || newSettings.accountBalance)
-              : (newSettings.accountBalance || 0);
+            runningEquity = inMasterPhase
+              ? Number(newSettings.masterAccountBalance) ||
+                newSettings.accountBalance
+              : newSettings.accountBalance || 0;
           }
 
           return {
@@ -1001,15 +1263,19 @@ function App() {
 
     // Clean the value (remove leading zeros)
     let cleanedValue = String(value).trim();
-    
+
     // Remove leading zeros except for decimals (0.5, 0.25, etc.)
-    if (cleanedValue.length > 1 && cleanedValue[0] === "0" && cleanedValue[1] !== ".") {
+    if (
+      cleanedValue.length > 1 &&
+      cleanedValue[0] === "0" &&
+      cleanedValue[1] !== "."
+    ) {
       cleanedValue = cleanedValue.replace(/^0+/, "");
       if (cleanedValue === "") cleanedValue = "0";
     }
 
     const numValue = Number(cleanedValue);
-    
+
     // Validate number
     if (isNaN(numValue) || !isFinite(numValue) || numValue < 0) {
       return;
@@ -1085,12 +1351,13 @@ function App() {
     // Calculate current equity before this trade
     let runningEquity = settings.accountBalance;
     const challengeType = settings.challengeType || "two-step";
-    
+
     // For zero-step (direct master), start with masterAccountBalance
     if (challengeType === "zero-step") {
-      runningEquity = Number(settings.masterAccountBalance) || settings.accountBalance;
+      runningEquity =
+        Number(settings.masterAccountBalance) || settings.accountBalance;
     }
-    
+
     if (trades.length > 0) {
       const lastTrade = trades[trades.length - 1];
       if (lastTrade && lastTrade.equityAfter) {
@@ -1102,10 +1369,11 @@ function App() {
     } else {
       // First trade - check if we should use master account
       if (challengeType === "zero-step") {
-        runningEquity = Number(settings.masterAccountBalance) || settings.accountBalance;
+        runningEquity =
+          Number(settings.masterAccountBalance) || settings.accountBalance;
       }
     }
-    
+
     // Check if we're in Master phase (for non-zero-step challenges)
     if (challengeType !== "zero-step" && trades.length > 0) {
       const lastTrade = trades[trades.length - 1];
@@ -1117,19 +1385,21 @@ function App() {
         const initialBalance = settings.accountBalance;
         let phase1Target = 0;
         let phase2Target = 0;
-        
+
         if (challengeType === "two-step") {
           phase1Target = initialBalance * (1 + settings.phase1Target / 100);
           phase2Target = phase1Target * (1 + settings.phase2Target / 100);
           if (runningEquity >= phase2Target) {
             // Transitioning to Master, use masterAccountBalance
-            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            runningEquity =
+              Number(settings.masterAccountBalance) || runningEquity;
           }
         } else if (challengeType === "one-step") {
           phase1Target = initialBalance * (1 + settings.phase1Target / 100);
           if (runningEquity >= phase1Target) {
             // Transitioning to Master, use masterAccountBalance
-            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            runningEquity =
+              Number(settings.masterAccountBalance) || runningEquity;
           }
         }
       }
@@ -1146,11 +1416,18 @@ function App() {
 
     const result = newTrade.outcome === "Win" ? rewardDollars : -riskDollars;
     const equityAfter = runningEquity + result;
-    
+
     // Determine if this trade is in Master phase
-    const isMasterPhase = challengeType === "zero-step" || 
-      (challengeType === "two-step" && equityAfter >= settings.accountBalance * (1 + settings.phase1Target / 100) * (1 + settings.phase2Target / 100)) ||
-      (challengeType === "one-step" && equityAfter >= settings.accountBalance * (1 + settings.phase1Target / 100));
+    const isMasterPhase =
+      challengeType === "zero-step" ||
+      (challengeType === "two-step" &&
+        equityAfter >=
+          settings.accountBalance *
+            (1 + settings.phase1Target / 100) *
+            (1 + settings.phase2Target / 100)) ||
+      (challengeType === "one-step" &&
+        equityAfter >=
+          settings.accountBalance * (1 + settings.phase1Target / 100));
 
     const tradeToAdd = {
       id: Date.now(),
@@ -1168,7 +1445,7 @@ function App() {
     };
 
     setTrades((prev) => [...prev, tradeToAdd]);
-    
+
     // Update master account balance if in master phase
     if (isMasterPhase && challengeType !== "zero-step") {
       // Update master account balance to reflect the new equity
@@ -1217,38 +1494,47 @@ function App() {
 
         // Recalculate all trades from the updated one onwards
         const challengeType = settings.challengeType || "two-step";
-        let runningEquity = challengeType === "zero-step"
-          ? (Number(settings.masterAccountBalance) || settings.accountBalance)
-          : settings.accountBalance;
-        
+        let runningEquity =
+          challengeType === "zero-step"
+            ? Number(settings.masterAccountBalance) || settings.accountBalance
+            : settings.accountBalance;
+
         if (tradeIndex > 0) {
           const prevTrade = updatedTrades[tradeIndex - 1];
           if (prevTrade?.equityAfter) {
             const parsed = Number(prevTrade.equityAfter);
             runningEquity = isNaN(parsed) ? runningEquity : parsed;
           }
-          
+
           // Check if previous trade was in master phase
           if (prevTrade?.isMasterPhase && challengeType !== "zero-step") {
-            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            runningEquity =
+              Number(settings.masterAccountBalance) || runningEquity;
           }
         }
-        
+
         // Check if we should be in master phase
-        let inMasterPhase = challengeType === "zero-step" || 
+        let inMasterPhase =
+          challengeType === "zero-step" ||
           (tradeIndex > 0 && updatedTrades[tradeIndex - 1]?.isMasterPhase);
-        
+
         if (!inMasterPhase && challengeType !== "zero-step") {
           const initialBalance = settings.accountBalance;
-          const phase1Target = initialBalance * (1 + settings.phase1Target / 100);
+          const phase1Target =
+            initialBalance * (1 + settings.phase1Target / 100);
           const phase2Target = phase1Target * (1 + settings.phase2Target / 100);
-          
+
           if (challengeType === "two-step" && runningEquity >= phase2Target) {
             inMasterPhase = true;
-            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
-          } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+            runningEquity =
+              Number(settings.masterAccountBalance) || runningEquity;
+          } else if (
+            challengeType === "one-step" &&
+            runningEquity >= phase1Target
+          ) {
             inMasterPhase = true;
-            runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+            runningEquity =
+              Number(settings.masterAccountBalance) || runningEquity;
           }
         }
 
@@ -1279,18 +1565,25 @@ function App() {
           // Check if this trade transitions to master phase
           if (!inMasterPhase && challengeType !== "zero-step") {
             const initialBalance = settings.accountBalance;
-            const phase1Target = initialBalance * (1 + settings.phase1Target / 100);
-            const phase2Target = phase1Target * (1 + settings.phase2Target / 100);
-            
+            const phase1Target =
+              initialBalance * (1 + settings.phase1Target / 100);
+            const phase2Target =
+              phase1Target * (1 + settings.phase2Target / 100);
+
             if (challengeType === "two-step" && runningEquity >= phase2Target) {
               inMasterPhase = true;
-              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
-            } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+              runningEquity =
+                Number(settings.masterAccountBalance) || runningEquity;
+            } else if (
+              challengeType === "one-step" &&
+              runningEquity >= phase1Target
+            ) {
               inMasterPhase = true;
-              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+              runningEquity =
+                Number(settings.masterAccountBalance) || runningEquity;
             }
           }
-          
+
           updatedTrades[i] = {
             ...trade,
             riskDollars: riskDollars.toFixed(2),
@@ -1300,10 +1593,13 @@ function App() {
             isMasterPhase: inMasterPhase,
           };
         }
-        
+
         // Update master account balance if in master phase
         const lastTrade = updatedTrades[updatedTrades.length - 1];
-        if (lastTrade && (lastTrade.isMasterPhase || challengeType === "zero-step")) {
+        if (
+          lastTrade &&
+          (lastTrade.isMasterPhase || challengeType === "zero-step")
+        ) {
           const finalEquity = Number(lastTrade.equityAfter);
           if (!isNaN(finalEquity) && isFinite(finalEquity)) {
             setSettings((prev) => ({
@@ -1335,18 +1631,19 @@ function App() {
           }
           return filtered;
         }
-        
+
         // Recalculate equity for remaining trades using recalculateAllTrades logic
         const challengeType = settings.challengeType || "two-step";
-        let runningEquity = challengeType === "zero-step"
-          ? (Number(settings.masterAccountBalance) || settings.accountBalance)
-          : Number(settings.accountBalance) || 0;
-        
+        let runningEquity =
+          challengeType === "zero-step"
+            ? Number(settings.masterAccountBalance) || settings.accountBalance
+            : Number(settings.accountBalance) || 0;
+
         const initialBalance = settings.accountBalance;
         const phase1Target = initialBalance * (1 + settings.phase1Target / 100);
         const phase2Target = phase1Target * (1 + settings.phase2Target / 100);
         let inMasterPhase = challengeType === "zero-step";
-        
+
         const recalculated = filtered.map((trade) => {
           if (!trade) return trade;
 
@@ -1354,10 +1651,15 @@ function App() {
           if (!inMasterPhase && challengeType !== "zero-step") {
             if (challengeType === "two-step" && runningEquity >= phase2Target) {
               inMasterPhase = true;
-              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
-            } else if (challengeType === "one-step" && runningEquity >= phase1Target) {
+              runningEquity =
+                Number(settings.masterAccountBalance) || runningEquity;
+            } else if (
+              challengeType === "one-step" &&
+              runningEquity >= phase1Target
+            ) {
               inMasterPhase = true;
-              runningEquity = Number(settings.masterAccountBalance) || runningEquity;
+              runningEquity =
+                Number(settings.masterAccountBalance) || runningEquity;
             }
           }
 
@@ -1378,9 +1680,9 @@ function App() {
 
           // Ensure runningEquity is valid
           if (isNaN(runningEquity) || !isFinite(runningEquity)) {
-            runningEquity = inMasterPhase 
-              ? (Number(settings.masterAccountBalance) || settings.accountBalance)
-              : (settings.accountBalance || 0);
+            runningEquity = inMasterPhase
+              ? Number(settings.masterAccountBalance) || settings.accountBalance
+              : settings.accountBalance || 0;
           }
 
           return {
@@ -1392,10 +1694,13 @@ function App() {
             isMasterPhase: inMasterPhase,
           };
         });
-        
+
         // Update master account balance if in master phase
         const lastTrade = recalculated[recalculated.length - 1];
-        if (lastTrade && (lastTrade.isMasterPhase || challengeType === "zero-step")) {
+        if (
+          lastTrade &&
+          (lastTrade.isMasterPhase || challengeType === "zero-step")
+        ) {
           const finalEquity = Number(lastTrade.equityAfter);
           if (!isNaN(finalEquity) && isFinite(finalEquity)) {
             setSettings((prev) => ({
@@ -1404,7 +1709,7 @@ function App() {
             }));
           }
         }
-        
+
         return recalculated;
       });
     } catch (error) {
@@ -1460,174 +1765,236 @@ function App() {
     document.body.removeChild(link);
   };
 
+  // Helper function to calculate stats from trades
+  const calculateStats = () => {
+    const totalTrades = trades.length;
+    const wins = trades.filter((t) => t && t.outcome === "Win").length;
+    const losses = trades.filter((t) => t && t.outcome === "Loss").length;
+    const winRate = totalTrades > 0 ? wins / totalTrades : 0;
+
+    let currentEquity = settings.accountBalance;
+    let peakEquity = settings.accountBalance;
+    let maxDrawdown = 0;
+
+    if (trades.length > 0) {
+      const lastTrade = trades[trades.length - 1];
+      if (lastTrade && lastTrade.equityAfter) {
+        currentEquity =
+          Number(lastTrade.equityAfter) || settings.accountBalance;
+      }
+
+      // Calculate peak equity and max drawdown
+      let runningEquity = settings.accountBalance;
+      trades.forEach((trade) => {
+        if (trade && trade.resultDollars) {
+          runningEquity += Number(trade.resultDollars) || 0;
+          if (runningEquity > peakEquity) peakEquity = runningEquity;
+          const drawdown = peakEquity - runningEquity;
+          if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+        }
+      });
+    }
+
+    const totalPL = currentEquity - settings.accountBalance;
+    const maxDrawdownPercent = peakEquity > 0 ? maxDrawdown / peakEquity : 0;
+
+    return {
+      totalTrades,
+      wins,
+      losses,
+      winRate,
+      totalPL,
+      currentEquity,
+      peakEquity,
+      maxDrawdown,
+      maxDrawdownPercent,
+    };
+  };
+
   // Export to Excel (Create New Excel File) - Matching XAUUSD_ULTIMATE_TRADING_JOURNAL.xlsx format
   const exportToExcel = () => {
     try {
-      if (trades.length === 0) {
-        alert("No trades to export. Please add trades first.");
-        return;
-      }
-
       // Create workbook
       const wb = XLSX.utils.book_new();
 
-      // Prepare data with headers matching the provided Excel format
-      const headers = [
-        "Trade #",
-        "Date",
-        "Session",
-        "Entry",
-        "Lot Size",
-        "Outcome",
-        "Risk $",
-        "Reward $",
-        "Result $",
-        "Equity After",
-        "Notes",
+      // ========== Dashboard Sheet ==========
+      const dashboardData = [
+        ["ACCOUNT DASHBOARD", ""],
+        ["", ""],
+        ["Starting Balance ($)", settings.accountBalance],
+        ["Fixed SL (pips)", settings.stopLossPips],
+        ["Default Risk % (editable)", settings.riskPercent / 100],
+        ["", ""],
+        [
+          "Phase1 Target (10%)",
+          settings.accountBalance * (settings.phase1Target / 100),
+        ],
+        [
+          "Phase2 Target (5%)",
+          settings.accountBalance * (settings.phase2Target / 100),
+        ],
+        ["", ""],
+        [
+          "Daily Drawdown Limit (5%)",
+          settings.accountBalance * (settings.dailyDrawdownLimit / 100),
+        ],
+        ["Overall Drawdown Limit (10%)", settings.accountBalance * 0.1],
       ];
+      const dashboardWs = XLSX.utils.aoa_to_sheet(dashboardData);
+      dashboardWs["!cols"] = [{ wch: 30 }, { wch: 15 }];
+      XLSX.utils.book_append_sheet(wb, dashboardWs, "Dashboard");
 
-      const data = [headers];
-      
-      // Add trade data with trade count - ensure all values are properly formatted
-      trades.forEach((trade, index) => {
-        if (!trade) return; // Skip null/undefined trades
-        
-        data.push([
-          index + 1, // Trade count starting from 1
-          String(trade.date || "").trim(),
-          String(trade.session || "London").trim(),
-          String(trade.entry || "").trim(),
-          String(trade.lotSize || "").trim(),
-          String(trade.outcome || "Win").trim(),
-          String(trade.riskDollars || "0.00").trim(),
-          String(trade.rewardDollars || "0.00").trim(),
-          String(trade.resultDollars || "0.00").trim(),
-          String(trade.equityAfter || "0.00").trim(),
-          String(trade.notes || "").trim(),
-        ]);
+      // ========== Trade_Journal Sheet ==========
+      // Use canonical column headers - STRICT STRUCTURE MATCH
+      const tradeJournalHeaders = [...CANONICAL_TRADE_COLUMNS];
+      const tradeJournalData = [tradeJournalHeaders];
+
+      // Convert app trades to canonical model and then to Excel rows
+      trades.forEach((appTrade) => {
+        if (!appTrade) return;
+
+        // Convert to canonical model
+        const canonicalTrade = appTradeToCanonical(appTrade, settings);
+
+        // Convert canonical trade to Excel row (strict mapping)
+        const excelRow = tradeToExcelRow(canonicalTrade);
+        tradeJournalData.push(excelRow);
       });
 
-      // Create worksheet
-      const ws = XLSX.utils.aoa_to_sheet(data);
-
-      // Set optimal column widths - reduced for Date/Entry/Lot Size, increased for Risk/Reward/Result
-      ws["!cols"] = [
-        { wch: 8 },  // Trade # - compact
-        { wch: 11 }, // Date - reduced (fits YYYY-MM-DD)
-        { wch: 10 }, // Session - compact
-        { wch: 10 }, // Entry - reduced (fits trading pairs)
-        { wch: 9 },  // Lot Size - reduced (fits 0.01 format)
-        { wch: 10 }, // Outcome - compact
-        { wch: 15 }, // Risk $ - increased
-        { wch: 15 }, // Reward $ - increased
-        { wch: 15 }, // Result $ - increased
-        { wch: 15 }, // Equity After
-        { wch: 40 }, // Notes - wider for longer notes
+      const tradeJournalWs = XLSX.utils.aoa_to_sheet(tradeJournalData);
+      tradeJournalWs["!cols"] = [
+        { wch: 12 }, // Date
+        { wch: 15 }, // Session (IST)
+        { wch: 10 }, // Pair
+        { wch: 15 }, // Setup Type
+        { wch: 12 }, // Direction
+        { wch: 12 }, // Entry Price
+        { wch: 15 }, // Stop Loss Price
+        { wch: 15 }, // Take Profit Price
+        { wch: 15 }, // Stop Loss (pips)
+        { wch: 15 }, // Take Profit (pips)
+        { wch: 10 }, // Lot Size
+        { wch: 12 }, // Risk $
+        { wch: 12 }, // Reward $
+        { wch: 12 }, // Result $
+        { wch: 10 }, // Outcome
+        { wch: 15 }, // Rule Followed?
+        { wch: 18 }, // Equity After Trade
+        { wch: 40 }, // Notes
       ];
+      XLSX.utils.book_append_sheet(wb, tradeJournalWs, "Trade_Journal");
 
-      // Freeze header row for better navigation
-      ws["!freeze"] = { xSplit: 0, ySplit: 1, topLeftCell: "A2", activePane: "bottomLeft", state: "frozen" };
+      // ========== Stats Sheet ==========
+      const stats = calculateStats();
+      const statsData = [
+        ["Total Trades", stats.totalTrades],
+        ["Winning Trades", stats.wins],
+        ["Losing Trades", stats.losses],
+        ["Win Rate %", stats.winRate],
+        ["", ""],
+        ["Total P/L ($)", stats.totalPL],
+        ["Current Equity ($)", stats.currentEquity],
+        ["Peak Equity ($)", stats.peakEquity],
+        ["Max Drawdown ($)", stats.maxDrawdown],
+        ["Max Drawdown %", stats.maxDrawdownPercent],
+      ];
+      const statsWs = XLSX.utils.aoa_to_sheet(statsData);
+      statsWs["!cols"] = [{ wch: 25 }, { wch: 20 }];
+      XLSX.utils.book_append_sheet(wb, statsWs, "Stats");
 
-      // Add auto-filter to header row (11 columns now with Trade #)
-      if (data.length > 1) {
-        ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: data.length - 1, c: headers.length - 1 } }) };
-      }
+      // ========== Progress Sheet ==========
+      const phase1Target =
+        settings.accountBalance * (settings.phase1Target / 100);
+      const phase2Target =
+        settings.accountBalance * (settings.phase2Target / 100);
+      const progressToPhase1 =
+        phase1Target > 0
+          ? Math.min(100, (stats.totalPL / phase1Target) * 100)
+          : 0;
+      const progressToPhase2 =
+        phase2Target > 0
+          ? Math.min(100, (stats.totalPL / phase2Target) * 100)
+          : 0;
 
-      // Style header row - Note: XLSX browser version has limited styling support
-      // But we'll set it up for Excel to apply when opened
-      const headerRange = XLSX.utils.decode_range(ws["!ref"] || "A1");
-      for (let col = headerRange.s.c; col <= headerRange.e.c; col++) {
-        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
-        if (!ws[cellAddress]) continue;
-        
-        // Set cell type and format
-        ws[cellAddress].t = "s"; // String type
-        // Note: Full styling requires xlsx-style library, but basic formatting will work
-      }
+      const progressData = [
+        ["Phase 1 Target (10%)", phase1Target],
+        ["Phase 2 Target (5%)", phase2Target],
+        ["", ""],
+        ["Current Realized P/L ($)", stats.totalPL],
+        ["Progress to Phase1 (%)", progressToPhase1],
+        ["Progress to Phase2 (%)", progressToPhase2],
+      ];
+      const progressWs = XLSX.utils.aoa_to_sheet(progressData);
+      progressWs["!cols"] = [{ wch: 25 }, { wch: 20 }];
+      XLSX.utils.book_append_sheet(wb, progressWs, "Progress");
 
-      // Format number columns (Trade #, Risk $, Reward $, Result $, Equity After, Lot Size)
-      if (data.length > 1) {
-        for (let row = 1; row < data.length; row++) {
-          // Trade # (column A, index 0) - format as number
-          const tradeNumCell = XLSX.utils.encode_cell({ r: row, c: 0 });
-          if (ws[tradeNumCell] && ws[tradeNumCell].v) {
-            ws[tradeNumCell].t = "n"; // Number type
-            ws[tradeNumCell].z = "0"; // Integer format
-          }
-          
-          // Lot Size (column E, index 4) - format as number
-          const lotCell = XLSX.utils.encode_cell({ r: row, c: 4 });
-          if (ws[lotCell] && ws[lotCell].v) {
-            const lotValue = Number(ws[lotCell].v);
-            if (!isNaN(lotValue)) {
-              ws[lotCell].v = lotValue;
-              ws[lotCell].t = "n"; // Number type
-              ws[lotCell].z = "0.00"; // 2 decimal places
-            }
-          }
-          
-          // Risk $ (column G, index 6) - increased width
-          const riskCell = XLSX.utils.encode_cell({ r: row, c: 6 });
-          if (ws[riskCell] && ws[riskCell].v) {
-            const numValue = Number(ws[riskCell].v);
-            if (!isNaN(numValue) && isFinite(numValue)) {
-              ws[riskCell].v = numValue;
-              ws[riskCell].t = "n";
-              ws[riskCell].z = "#,##0.00";
-            }
-          }
-          
-          // Reward $ (column H, index 7) - increased width
-          const rewardCell = XLSX.utils.encode_cell({ r: row, c: 7 });
-          if (ws[rewardCell] && ws[rewardCell].v) {
-            const numValue = Number(ws[rewardCell].v);
-            if (!isNaN(numValue) && isFinite(numValue)) {
-              ws[rewardCell].v = numValue;
-              ws[rewardCell].t = "n";
-              ws[rewardCell].z = "#,##0.00";
-            }
-          }
-          
-          // Result $ (column I, index 8) - increased width
-          const resultCell = XLSX.utils.encode_cell({ r: row, c: 8 });
-          if (ws[resultCell] && ws[resultCell].v) {
-            const numValue = Number(ws[resultCell].v);
-            if (!isNaN(numValue) && isFinite(numValue)) {
-              ws[resultCell].v = numValue;
-              ws[resultCell].t = "n";
-              ws[resultCell].z = "#,##0.00";
-            }
-          }
-          
-          // Equity After (column J, index 9)
-          const equityCell = XLSX.utils.encode_cell({ r: row, c: 9 });
-          if (ws[equityCell] && ws[equityCell].v) {
-            const numValue = Number(ws[equityCell].v);
-            if (!isNaN(numValue) && isFinite(numValue)) {
-              ws[equityCell].v = numValue;
-              ws[equityCell].t = "n";
-              ws[equityCell].z = "#,##0.00";
-            }
-          }
-        }
-      }
+      // ========== READ ME Sheet ==========
+      const readMeData = [
+        ["⚠️ READ ME FIRST – HOW TO USE THIS TRADING JOURNAL"],
+        [""],
+        ["EDIT ONLY THESE COLUMNS IN Trade_Journal:"],
+        [
+          "Date, Session, Pair, Setup Type, Direction, Entry, SL, TP, SL pips, TP pips, Lot, Outcome, Rule Followed, Notes",
+        ],
+        [""],
+        ["DO NOT EDIT:"],
+        [
+          "Risk $, Reward $, Result $, Equity After Trade, Stats sheet, Progress sheet",
+        ],
+        [""],
+        ["HOW IT WORKS:"],
+        ["• Risk $ = Lot × 100 × SL pips"],
+        ["• Reward $ = Lot × 100 × TP pips"],
+        ["• Result $ auto-calculates based on Win/Loss"],
+        ["• Progress updates automatically toward 10% and 5% targets"],
+        [""],
+        ["COLOR GUIDE:"],
+        ["Green = Profit, Red = Loss, Yellow = Rule Broken"],
+        [""],
+        ["DAILY STEPS:"],
+        ["1. Enter trade row"],
+        ["2. Select Win/Loss"],
+        ["3. Review Stats & Progress"],
+      ];
+      const readMeWs = XLSX.utils.aoa_to_sheet(readMeData);
+      readMeWs["!cols"] = [{ wch: 80 }];
+      XLSX.utils.book_append_sheet(wb, readMeWs, "READ ME");
 
-      // Add worksheet to workbook with exact sheet name
-      XLSX.utils.book_append_sheet(wb, ws, "Trading Journal");
+      // ========== 1-PAGE GUIDE Sheet ==========
+      const guideData = [
+        ["XAUUSD TRADING JOURNAL – QUICK GUIDE"],
+        [""],
+        ["PAIR: XAUUSD | SL: 12 pips | TP: 5 pips"],
+        [
+          `ACCOUNT: $${settings.accountBalance} | TARGET: ${settings.phase1Target}% then ${settings.phase2Target}%`,
+        ],
+        [""],
+        ["ENTER DATA ONLY IN Trade_Journal"],
+        ["ONE ROW = ONE TRADE"],
+        [""],
+        ["GREEN = WIN | RED = LOSS | YELLOW = RULE BROKEN"],
+        [""],
+        ["NEVER EDIT FORMULA CELLS"],
+        [""],
+        ["CHECK Stats & Progress DAILY"],
+      ];
+      const guideWs = XLSX.utils.aoa_to_sheet(guideData);
+      guideWs["!cols"] = [{ wch: 80 }];
+      XLSX.utils.book_append_sheet(wb, guideWs, "1-PAGE GUIDE");
 
-      // Use exact filename format: XAUUSD_ULTIMATE_TRADING_JOURNAL.xlsx
+      // Use exact filename format
       const filename = "XAUUSD_ULTIMATE_TRADING_JOURNAL.xlsx";
-
-      // Write file
       XLSX.writeFile(wb, filename);
-      alert(`Excel file "${filename}" created successfully with ${trades.length} trade(s)!`);
+      alert(
+        `Excel file "${filename}" created successfully with ${trades.length} trade(s)!\n\nAll sheets created: Dashboard, Trade_Journal, Stats, Progress, READ ME, 1-PAGE GUIDE`
+      );
     } catch (error) {
       console.error("Error exporting to Excel:", error);
       alert("Error creating Excel file. Please try again.");
     }
   };
 
-  // Upload to Existing Excel (Append with duplicate checking) - FIXED & OPTIMIZED
+  // Upload to Existing Excel (Append to Trade_Journal sheet) - Matching template format
   const uploadToExistingExcel = () => {
     if (trades.length === 0) {
       alert("No trades to upload. Please add trades first.");
@@ -1652,7 +2019,7 @@ function App() {
       reader.onerror = () => {
         alert("Error reading file. Please try again.");
       };
-      
+
       reader.onload = (event) => {
         try {
           const data = new Uint8Array(event.target.result);
@@ -1663,12 +2030,29 @@ function App() {
             return;
           }
 
-          // Get first sheet
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
+          // Find Trade_Journal sheet
+          const tradeJournalSheetName =
+            workbook.SheetNames.find(
+              (name) =>
+                name.toLowerCase().includes("trade") &&
+                name.toLowerCase().includes("journal")
+            ) ||
+            workbook.SheetNames.find(
+              (name) =>
+                name.toLowerCase().includes("trade") ||
+                name.toLowerCase().includes("journal")
+            );
 
+          if (!tradeJournalSheetName) {
+            alert(
+              "Could not find Trade_Journal sheet in the Excel file. Please ensure the file format is correct."
+            );
+            return;
+          }
+
+          const worksheet = workbook.Sheets[tradeJournalSheetName];
           if (!worksheet) {
-            alert("Invalid Excel file. Sheet is empty.");
+            alert("Invalid Excel file. Trade_Journal sheet is empty.");
             return;
           }
 
@@ -1680,37 +2064,44 @@ function App() {
           });
 
           if (!existingData || existingData.length < 1) {
-            alert("The Excel file appears to be empty.");
+            alert("The Trade_Journal sheet appears to be empty.");
             return;
           }
 
-          // Get headers (first row) - normalize to lowercase for comparison
+          // Get headers (first row) - normalize to lowercase
           const rawHeaders = existingData[0] || [];
-          const headers = rawHeaders.map((h) => String(h || "").trim().toLowerCase());
-
-          // Check if Trade # column exists
-          const tradeNumIdx = headers.findIndex((h) =>
-            (h.includes("trade") && (h.includes("#") || h.includes("num") || h.includes("count"))) || h === "trade #"
+          const headers = rawHeaders.map((h) =>
+            String(h || "")
+              .trim()
+              .toLowerCase()
           );
-          const hasTradeNum = tradeNumIdx !== -1;
 
-          // Find column indices (handle both with and without Trade #)
-          const dateIdx = headers.findIndex((h) => h.includes("date") && !h.includes("trade"));
-          const entryIdx = headers.findIndex((h) => h.includes("entry"));
-          const lotSizeIdx = headers.findIndex((h) => (h.includes("lot") || h.includes("size")) && !h.includes("trade"));
+          // Find column indices for Trade_Journal format
+          const dateIdx = headers.findIndex(
+            (h) => h.includes("date") && !h.includes("trade")
+          );
+          const pairIdx = headers.findIndex((h) => h.includes("pair"));
+          const entryPriceIdx = headers.findIndex(
+            (h) => h.includes("entry") && h.includes("price")
+          );
+          const entryIdx = entryPriceIdx !== -1 ? entryPriceIdx : pairIdx;
+          const lotSizeIdx = headers.findIndex(
+            (h) =>
+              (h.includes("lot") && h.includes("size")) ||
+              (h.includes("lot") && !h.includes("loss"))
+          );
           const sessionIdx = headers.findIndex((h) => h.includes("session"));
-          const outcomeIdx = headers.findIndex((h) => h.includes("outcome"));
-          const notesIdx = headers.findIndex((h) => h.includes("note"));
 
           if (dateIdx === -1 || entryIdx === -1) {
             alert(
-              "Excel file must contain 'Date' and 'Entry' columns. Please check the file format.\n\nFound columns: " + rawHeaders.join(", ")
+              "Trade_Journal sheet must contain 'Date' and 'Pair' or 'Entry' columns. Please check the file format.\n\nFound columns: " +
+                rawHeaders.join(", ")
             );
             return;
           }
 
-          // Extract existing trades for duplicate checking (skip header row)
-          const existingTradesMap = new Map(); // Use Map for faster lookup
+          // Extract existing trades for duplicate checking (skip header row and warning row)
+          const existingTradesMap = new Map();
           for (let i = 1; i < existingData.length; i++) {
             const row = existingData[i];
             if (!row || !Array.isArray(row) || row.length === 0) continue;
@@ -1719,31 +2110,13 @@ function App() {
             const entry = String(row[entryIdx] || "").trim();
             const lotSize = String(row[lotSizeIdx] || "").trim();
 
+            // Skip warning rows
+            if (date.includes("⚠️") || date.includes("DO NOT EDIT")) continue;
+
             // Create unique key for duplicate checking
             if (date && entry) {
               const key = `${date}|${entry}|${lotSize}`;
               existingTradesMap.set(key, true);
-            }
-          }
-
-          // If Trade # column doesn't exist, add it to the header and existing rows
-          if (!hasTradeNum) {
-            existingData[0].unshift("Trade #");
-            // Shift all existing data rows to accommodate new column
-            for (let i = 1; i < existingData.length; i++) {
-              if (existingData[i] && Array.isArray(existingData[i])) {
-                existingData[i].unshift(i); // Add trade number
-              }
-            }
-          } else {
-            // Trade # exists, but we need to ensure all rows have it
-            // Re-number existing trades if needed
-            for (let i = 1; i < existingData.length; i++) {
-              if (existingData[i] && Array.isArray(existingData[i])) {
-                if (existingData[i][tradeNumIdx] === undefined || existingData[i][tradeNumIdx] === "") {
-                  existingData[i][tradeNumIdx] = i;
-                }
-              }
             }
           }
 
@@ -1755,136 +2128,135 @@ function App() {
             const date = String(trade.date).trim();
             const entry = String(trade.entry).trim();
             const lotSize = String(trade.lotSize || "").trim();
-            
-            // Create unique key for duplicate checking
+
             const key = `${date}|${entry}|${lotSize}`;
-            
+
             if (!existingTradesMap.has(key)) {
               newTradesToAdd.push(trade);
-              // Add to map to prevent duplicates within new trades
               existingTradesMap.set(key, true);
             }
           });
 
           if (newTradesToAdd.length === 0) {
-            alert("No new trades to add. All trades already exist in the Excel file.");
+            alert(
+              "No new trades to add. All trades already exist in the Excel file."
+            );
             return;
           }
 
-          // Calculate starting trade number
-          const existingTradeCount = existingData.length - 1; // Subtract header row
-
-          // Add new trades to existing data
-          newTradesToAdd.forEach((trade, index) => {
-            const tradeNum = existingTradeCount + index + 1;
-            
-            // Ensure all values are properly formatted
-            const newRow = [
-              tradeNum,
-              String(trade.date || "").trim(),
-              String(trade.session || "London").trim(),
-              String(trade.entry || "").trim(),
-              String(trade.lotSize || "").trim(),
-              String(trade.outcome || "Win").trim(),
-              String(trade.riskDollars || "0.00").trim(),
-              String(trade.rewardDollars || "0.00").trim(),
-              String(trade.resultDollars || "0.00").trim(),
-              String(trade.equityAfter || "0.00").trim(),
-              String(trade.notes || "").trim(),
-            ];
-            
-            existingData.push(newRow);
-          });
-
-          // Create new workbook with updated data
-          const newWb = XLSX.utils.book_new();
-          const newWs = XLSX.utils.aoa_to_sheet(existingData);
-
-          // Set optimal column widths matching the export format
-          newWs["!cols"] = [
-            { wch: 8 },  // Trade # - compact
-            { wch: 11 }, // Date - reduced
-            { wch: 10 }, // Session - compact
-            { wch: 10 }, // Entry - reduced
-            { wch: 9 },  // Lot Size - reduced
-            { wch: 10 }, // Outcome - compact
-            { wch: 15 }, // Risk $ - increased
-            { wch: 15 }, // Reward $ - increased
-            { wch: 15 }, // Result $ - increased
-            { wch: 15 }, // Equity After
-            { wch: 40 }, // Notes
-          ];
-
-          // Freeze header row
-          newWs["!freeze"] = { xSplit: 0, ySplit: 1, topLeftCell: "A2", activePane: "bottomLeft", state: "frozen" };
-
-          // Add auto-filter (11 columns now with Trade #)
+          // Get last equity to calculate running equity
+          let lastEquity = settings.accountBalance;
           if (existingData.length > 1) {
-            newWs["!autofilter"] = { 
-              ref: XLSX.utils.encode_range({ 
-                s: { r: 0, c: 0 }, 
-                e: { r: existingData.length - 1, c: 10 } 
-              }) 
-            };
-          }
-
-          // Format number columns
-          if (existingData.length > 1) {
-            for (let row = 1; row < existingData.length; row++) {
-              // Trade # (column A, index 0)
-              const tradeNumCell = XLSX.utils.encode_cell({ r: row, c: 0 });
-              if (newWs[tradeNumCell]) {
-                const tradeNum = Number(newWs[tradeNumCell].v);
-                if (!isNaN(tradeNum)) {
-                  newWs[tradeNumCell].v = tradeNum;
-                  newWs[tradeNumCell].t = "n";
-                  newWs[tradeNumCell].z = "0";
-                }
-              }
-              
-              // Lot Size (column E, index 4)
-              const lotCell = XLSX.utils.encode_cell({ r: row, c: 4 });
-              if (newWs[lotCell] && newWs[lotCell].v) {
-                const lotValue = Number(newWs[lotCell].v);
-                if (!isNaN(lotValue) && isFinite(lotValue)) {
-                  newWs[lotCell].v = lotValue;
-                  newWs[lotCell].t = "n";
-                  newWs[lotCell].z = "0.00";
-                }
-              }
-              
-              // Format numeric columns (Risk $, Reward $, Result $, Equity After)
-              [6, 7, 8, 9].forEach((colIdx) => {
-                const cell = XLSX.utils.encode_cell({ r: row, c: colIdx });
-                if (newWs[cell] && newWs[cell].v) {
-                  const numValue = Number(newWs[cell].v);
-                  if (!isNaN(numValue) && isFinite(numValue)) {
-                    newWs[cell].v = numValue;
-                    newWs[cell].t = "n";
-                    newWs[cell].z = "#,##0.00";
+            const equityIdx = headers.findIndex(
+              (h) => h.includes("equity") && h.includes("trade")
+            );
+            if (equityIdx !== -1) {
+              for (let i = existingData.length - 1; i >= 1; i--) {
+                const row = existingData[i];
+                if (row && row[equityIdx]) {
+                  const equity = Number(row[equityIdx]);
+                  if (!isNaN(equity) && equity > 0) {
+                    lastEquity = equity;
+                    break;
                   }
                 }
-              });
+              }
             }
           }
 
-          // Use the same sheet name
-          const sheetName = firstSheetName || "Trading Journal";
-          XLSX.utils.book_append_sheet(newWb, newWs, sheetName);
+          // Add new trades to existing data with Trade_Journal format (18 columns)
+          let runningEquity = lastEquity;
+          newTradesToAdd.forEach((trade) => {
+            const lotSize = Number(trade.lotSize) || 0;
+            const riskDollars = Number(trade.riskDollars) || 0;
+            const rewardDollars = Number(trade.rewardDollars) || 0;
+            const resultDollars = Number(trade.resultDollars) || 0;
+            runningEquity += resultDollars;
 
-          // Save updated file with original filename format
+            const slPips = settings.stopLossPips;
+            const tpPips = settings.takeProfitPips;
+
+            const newRow = [
+              String(trade.date || "").trim(),
+              String(trade.session || "London").trim(),
+              String(trade.entry || "XAUUSD").trim(),
+              "", // Setup Type
+              "", // Direction
+              "", // Entry Price
+              "", // Stop Loss Price
+              "", // Take Profit Price
+              slPips,
+              tpPips,
+              lotSize,
+              riskDollars,
+              rewardDollars,
+              resultDollars,
+              String(trade.outcome || "Win").trim(),
+              "", // Rule Followed?
+              runningEquity,
+              String(trade.notes || "").trim(),
+            ];
+
+            existingData.push(newRow);
+          });
+
+          // Create new workbook
+          const newWb = XLSX.utils.book_new();
+
+          // Copy all existing sheets except Trade_Journal
+          workbook.SheetNames.forEach((sheetName) => {
+            if (sheetName !== tradeJournalSheetName) {
+              const ws = workbook.Sheets[sheetName];
+              if (ws) {
+                XLSX.utils.book_append_sheet(newWb, ws, sheetName);
+              }
+            }
+          });
+
+          // Create updated Trade_Journal sheet
+          const newTradeJournalWs = XLSX.utils.aoa_to_sheet(existingData);
+          newTradeJournalWs["!cols"] = [
+            { wch: 12 }, // Date
+            { wch: 15 }, // Session (IST)
+            { wch: 10 }, // Pair
+            { wch: 15 }, // Setup Type
+            { wch: 12 }, // Direction
+            { wch: 12 }, // Entry Price
+            { wch: 15 }, // Stop Loss Price
+            { wch: 15 }, // Take Profit Price
+            { wch: 15 }, // Stop Loss (pips)
+            { wch: 15 }, // Take Profit (pips)
+            { wch: 10 }, // Lot Size
+            { wch: 12 }, // Risk $
+            { wch: 12 }, // Reward $
+            { wch: 12 }, // Result $
+            { wch: 10 }, // Outcome
+            { wch: 15 }, // Rule Followed?
+            { wch: 18 }, // Equity After Trade
+            { wch: 40 }, // Notes
+          ];
+          XLSX.utils.book_append_sheet(
+            newWb,
+            newTradeJournalWs,
+            tradeJournalSheetName
+          );
+
+          // Save updated file
           const filename = "XAUUSD_ULTIMATE_TRADING_JOURNAL.xlsx";
           XLSX.writeFile(newWb, filename);
 
           alert(
-            `✅ Successfully added ${newTradesToAdd.length} new trade(s) to Excel file!\n\n` +
-            `• Duplicate entries were skipped\n` +
-            `• File saved as: "${filename}"\n` +
-            `• Total trades in file: ${existingData.length - 1}`
+            `✅ Successfully added ${newTradesToAdd.length} new trade(s) to Trade_Journal sheet!\n\n` +
+              `• Duplicate entries were skipped\n` +
+              `• File saved as: "${filename}"\n` +
+              `• All other sheets preserved\n` +
+              `• Total trades in file: ${existingData.length - 1}`
           );
         } catch (error) {
           console.error("Error uploading to Excel:", error);
-          alert(`Error processing Excel file: ${error.message}\n\nPlease make sure the file format is correct and try again.`);
+          alert(
+            `Error processing Excel file: ${error.message}\n\nPlease make sure the file format is correct and try again.`
+          );
         }
       };
       reader.readAsArrayBuffer(file);
@@ -1892,7 +2264,7 @@ function App() {
     input.click();
   };
 
-  // Import from Excel (Populate trades) - FIXED & OPTIMIZED
+  // Import from Excel (Strict parsing with validation) - Reading from Trade_Journal sheet
   const importFromExcel = () => {
     const input = document.createElement("input");
     input.type = "file";
@@ -1912,181 +2284,85 @@ function App() {
       reader.onerror = () => {
         alert("Error reading file. Please try again.");
       };
-      
+
       reader.onload = (event) => {
         try {
           const data = new Uint8Array(event.target.result);
           const workbook = XLSX.read(data, { type: "array" });
 
-          if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
-            alert("Invalid Excel file. No sheets found.");
+          // STRICT VALIDATION - FAIL FAST if structure doesn't match
+          const validation = validateExcelStructure(
+            workbook,
+            EXCEL_SHEET_NAMES
+          );
+          if (!validation.valid) {
+            alert(
+              `Excel structure validation failed:\n\n${validation.error}\n\nPlease ensure the file matches the exact structure.`
+            );
             return;
           }
 
-          // Get first sheet
-          const firstSheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[firstSheetName];
-
-          if (!worksheet) {
-            alert("Invalid Excel file. Sheet is empty.");
+          // Get Trade_Journal sheet (must exist after validation)
+          const tradeJournalSheet = workbook.Sheets["Trade_Journal"];
+          if (!tradeJournalSheet) {
+            alert(
+              "Trade_Journal sheet not found. This should not happen after validation."
+            );
             return;
           }
 
           // Convert to array of arrays
-          const excelData = XLSX.utils.sheet_to_json(worksheet, {
+          const excelData = XLSX.utils.sheet_to_json(tradeJournalSheet, {
             header: 1,
             defval: "",
             raw: false,
           });
 
           if (!excelData || excelData.length < 2) {
-            alert("The Excel file appears to be empty or invalid. Please ensure it has at least a header row and one data row.");
+            alert("Trade_Journal sheet has no data rows.");
             return;
           }
 
-          // Get headers (first row) - normalize to lowercase
+          // Build column index map using canonical columns (strict order)
           const rawHeaders = excelData[0] || [];
-          const headers = rawHeaders.map((h) => String(h || "").trim().toLowerCase());
+          const columnIndices = {};
+          CANONICAL_TRADE_COLUMNS.forEach((colName, index) => {
+            columnIndices[colName] = index;
+          });
 
-          // Find column indices (exclude Trade # from searches)
-          const dateIdx = headers.findIndex((h) => 
-            h.includes("date") && !h.includes("trade")
-          );
-          const entryIdx = headers.findIndex((h) => 
-            h.includes("entry")
-          );
-          const lotSizeIdx = headers.findIndex((h) => 
-            (h.includes("lot") || h.includes("size")) && !h.includes("trade")
-          );
-          const sessionIdx = headers.findIndex((h) => 
-            h.includes("session")
-          );
-          const outcomeIdx = headers.findIndex((h) => 
-            h.includes("outcome")
-          );
-          const notesIdx = headers.findIndex((h) => 
-            h.includes("note")
-          );
-          const riskIdx = headers.findIndex((h) => 
-            h.includes("risk")
-          );
-          const rewardIdx = headers.findIndex((h) => 
-            h.includes("reward")
-          );
-          const resultIdx = headers.findIndex((h) => 
-            h.includes("result")
-          );
-          const equityIdx = headers.findIndex((h) => 
-            h.includes("equity")
-          );
-
-          if (dateIdx === -1 || entryIdx === -1) {
-            alert(
-              "Excel file must contain 'Date' and 'Entry' columns. Please check the file format.\n\nFound columns: " + rawHeaders.join(", ")
-            );
-            return;
-          }
-
-          // Import trades (skip header row)
-          const importedTrades = [];
+          // Import trades using strict canonical model parsing (skip header row)
+          const importedCanonicalTrades = [];
           let skippedCount = 0;
-          
+
           for (let i = 1; i < excelData.length; i++) {
             const row = excelData[i];
-            if (!row || !Array.isArray(row) || row.length === 0) {
+            if (!row || !Array.isArray(row)) {
               skippedCount++;
               continue;
             }
 
-            const date = String(row[dateIdx] || "").trim();
-            const entry = String(row[entryIdx] || "").trim();
-
-            // Skip rows without required data
-            if (!date || !entry || date === "" || entry === "") {
+            // Parse row using canonical model (strict parsing)
+            const canonicalTrade = excelRowToTrade(row, columnIndices, i);
+            if (!canonicalTrade) {
               skippedCount++;
               continue;
             }
 
-            // Calculate current equity before this trade
-            let runningEquity = Number(settings.accountBalance) || 0;
-            if (importedTrades.length > 0) {
-              const lastTrade = importedTrades[importedTrades.length - 1];
-              if (lastTrade && lastTrade.equityAfter) {
-                const parsed = Number(lastTrade.equityAfter);
-                if (!isNaN(parsed) && isFinite(parsed) && parsed > 0) {
-                  runningEquity = parsed;
-                }
-              }
-            } else if (trades.length > 0) {
-              const lastTrade = trades[trades.length - 1];
-              if (lastTrade && lastTrade.equityAfter) {
-                const parsed = Number(lastTrade.equityAfter);
-                if (!isNaN(parsed) && isFinite(parsed) && parsed > 0) {
-                  runningEquity = parsed;
-                }
-              }
-            }
-
-            // Parse lot size with defensive checks
-            let lotSize = 0;
-            if (lotSizeIdx !== -1 && row[lotSizeIdx] !== undefined && row[lotSizeIdx] !== "") {
-              const parsed = Number(row[lotSizeIdx]);
-              if (!isNaN(parsed) && isFinite(parsed) && parsed >= 0) {
-                lotSize = parsed;
-              }
-            }
-
-            const riskDollars = (runningEquity * (Number(settings.riskPercent) || 0)) / 100;
-            const takeProfitPips = Number(settings.takeProfitPips) || 0;
-            const rewardDollars =
-              lotSize > 0 && takeProfitPips > 0
-                ? lotSize * takeProfitPips * 100
-                : 0;
-
-            // Use outcome from Excel or calculate from result
-            let outcome = "Win";
-            if (outcomeIdx !== -1 && row[outcomeIdx] !== undefined) {
-              const outcomeStr = String(row[outcomeIdx] || "").trim();
-              if (outcomeStr === "Win" || outcomeStr === "Loss") {
-                outcome = outcomeStr;
-              } else if (resultIdx !== -1 && row[resultIdx] !== undefined) {
-                // Try to determine from result column
-                const result = Number(row[resultIdx]);
-                if (!isNaN(result)) {
-                  outcome = result >= 0 ? "Win" : "Loss";
-                }
-              }
-            }
-
-            const result = outcome === "Win" ? rewardDollars : -riskDollars;
-            const equityAfter = runningEquity + result;
-
-            // Ensure equity doesn't go negative
-            const finalEquity = Math.max(0, equityAfter);
-
-            importedTrades.push({
-              id: Date.now() + i + Math.random(), // Unique ID
-              date: date,
-              session: String(row[sessionIdx] || "London").trim(),
-              entry: entry,
-              lotSize: String(lotSize || ""),
-              outcome: outcome,
-              notes: String(row[notesIdx] || "").trim(),
-              riskDollars: riskDollars.toFixed(2),
-              rewardDollars: rewardDollars.toFixed(2),
-              resultDollars: result.toFixed(2),
-              equityAfter: finalEquity.toFixed(2),
-            });
+            importedCanonicalTrades.push(canonicalTrade);
           }
 
-          if (importedTrades.length === 0) {
+          if (importedCanonicalTrades.length === 0) {
             alert(
               `No valid trades found in the Excel file.\n\n` +
-              `• Skipped ${skippedCount} invalid/empty row(s)\n` +
-              `• Please ensure rows have Date and Entry values`
+                `• Skipped ${skippedCount} invalid/empty row(s)\n` +
+                `• Please ensure rows have Date and Pair values`
             );
             return;
           }
+
+          // Convert canonical trades to app trades
+          const importedTrades =
+            importedCanonicalTrades.map(canonicalTradeToApp);
 
           // Limit number of trades to prevent memory issues (max 10,000 trades)
           const MAX_TRADES = 10000;
@@ -2094,13 +2370,17 @@ function App() {
           if (currentTradeCount + importedTrades.length > MAX_TRADES) {
             const allowed = MAX_TRADES - currentTradeCount;
             if (allowed <= 0) {
-              alert(`Maximum trade limit (${MAX_TRADES}) reached. Please delete some trades before importing.`);
+              alert(
+                `Maximum trade limit (${MAX_TRADES}) reached. Please delete some trades before importing.`
+              );
               return;
             }
             const skipped = importedTrades.length - allowed;
             importedTrades.splice(allowed);
             if (skipped > 0) {
-              alert(`Importing ${allowed} trades (limit reached). ${skipped} trades were skipped.`);
+              alert(
+                `Importing ${allowed} trades (limit reached). ${skipped} trades were skipped.`
+              );
             }
           }
 
@@ -2112,14 +2392,17 @@ function App() {
             recalculateAllTrades(settings);
           }, 100);
 
-          const message = skippedCount > 0
-            ? `✅ Successfully imported ${importedTrades.length} trade(s)!\n\n• ${skippedCount} invalid row(s) were skipped\n• All trades recalculated with current settings`
-            : `✅ Successfully imported ${importedTrades.length} trade(s)!\n\n• All trades recalculated with current settings`;
+          const message =
+            skippedCount > 0
+              ? `✅ Successfully imported ${importedTrades.length} trade(s) from Trade_Journal!\n\n• ${skippedCount} invalid row(s) were skipped\n• All trades recalculated with current settings`
+              : `✅ Successfully imported ${importedTrades.length} trade(s) from Trade_Journal!\n\n• All trades recalculated with current settings`;
 
           alert(message);
         } catch (error) {
           console.error("Error importing from Excel:", error);
-          alert("Error importing Excel file. Please make sure the file format is correct.");
+          alert(
+            "Error importing Excel file. Please make sure the file format is correct."
+          );
         }
       };
       reader.readAsArrayBuffer(file);
@@ -2203,13 +2486,17 @@ function App() {
             </div>
             <div className="flex gap-4 sm:gap-6 w-full sm:w-auto justify-between sm:justify-end">
               <div className="text-center sm:text-right">
-                <div className="text-xs sm:text-sm text-gray-400 mb-1">Progress</div>
+                <div className="text-xs sm:text-sm text-gray-400 mb-1">
+                  Progress
+                </div>
                 <div className="text-lg sm:text-xl md:text-2xl font-bold">
                   {metrics.phaseProgress.toFixed(1)}%
                 </div>
               </div>
               <div className="text-center sm:text-right">
-                <div className="text-xs sm:text-sm text-gray-400 mb-1">Target</div>
+                <div className="text-xs sm:text-sm text-gray-400 mb-1">
+                  Target
+                </div>
                 <div className="text-lg sm:text-xl md:text-2xl font-bold">
                   ${Number(metrics.phaseTarget).toLocaleString()}
                 </div>
@@ -2419,7 +2706,11 @@ function App() {
                     ? "border-purple-500 ring-2 ring-purple-500/20"
                     : ""
                 }`}
-                value={inputValues.riskPercent !== undefined ? inputValues.riskPercent : (settings.riskPercent || "")}
+                value={
+                  inputValues.riskPercent !== undefined
+                    ? inputValues.riskPercent
+                    : settings.riskPercent || ""
+                }
                 onChange={(e) => {
                   let val = e.target.value;
                   if (val === "") {
@@ -2441,7 +2732,10 @@ function App() {
                   }
                 }}
                 onFocus={(e) => {
-                  setInputValues({ ...inputValues, riskPercent: e.target.value });
+                  setInputValues({
+                    ...inputValues,
+                    riskPercent: e.target.value,
+                  });
                 }}
                 onBlur={(e) => {
                   const newInputValues = { ...inputValues };
@@ -2471,7 +2765,11 @@ function App() {
                 type="number"
                 step="0.01"
                 className="input w-full"
-                value={inputValues.riskPercent !== undefined ? inputValues.riskPercent : (settings.riskPercent || "")}
+                value={
+                  inputValues.riskPercent !== undefined
+                    ? inputValues.riskPercent
+                    : settings.riskPercent || ""
+                }
                 onChange={(e) => {
                   let val = e.target.value;
                   if (val === "") {
@@ -2493,7 +2791,10 @@ function App() {
                   }
                 }}
                 onFocus={(e) => {
-                  setInputValues({ ...inputValues, riskPercent: e.target.value });
+                  setInputValues({
+                    ...inputValues,
+                    riskPercent: e.target.value,
+                  });
                 }}
                 onBlur={(e) => {
                   const newInputValues = { ...inputValues };
@@ -2511,7 +2812,11 @@ function App() {
                 inputMode="numeric"
                 pattern="[0-9]*"
                 className="input w-full"
-                value={inputValues.stopLossPips !== undefined ? inputValues.stopLossPips : (settings.stopLossPips || "")}
+                value={
+                  inputValues.stopLossPips !== undefined
+                    ? inputValues.stopLossPips
+                    : settings.stopLossPips || ""
+                }
                 onChange={(e) => {
                   let val = e.target.value;
                   // Allow empty string for clearing
@@ -2537,7 +2842,10 @@ function App() {
                 }}
                 onFocus={(e) => {
                   // Store current value when focusing
-                  setInputValues({ ...inputValues, stopLossPips: e.target.value });
+                  setInputValues({
+                    ...inputValues,
+                    stopLossPips: e.target.value,
+                  });
                 }}
                 onBlur={(e) => {
                   // If empty on blur, restore previous value and clear input state
@@ -2563,7 +2871,11 @@ function App() {
                 inputMode="numeric"
                 pattern="[0-9]*"
                 className="input w-full"
-                value={inputValues.takeProfitPips !== undefined ? inputValues.takeProfitPips : (settings.takeProfitPips || "")}
+                value={
+                  inputValues.takeProfitPips !== undefined
+                    ? inputValues.takeProfitPips
+                    : settings.takeProfitPips || ""
+                }
                 onChange={(e) => {
                   let val = e.target.value;
                   if (val === "") {
@@ -2585,7 +2897,10 @@ function App() {
                   }
                 }}
                 onFocus={(e) => {
-                  setInputValues({ ...inputValues, takeProfitPips: e.target.value });
+                  setInputValues({
+                    ...inputValues,
+                    takeProfitPips: e.target.value,
+                  });
                 }}
                 onBlur={(e) => {
                   const newInputValues = { ...inputValues };
@@ -2655,7 +2970,10 @@ function App() {
                     }
                   }}
                   onFocus={(e) => {
-                    setInputValues({ ...inputValues, phase1Target: e.target.value });
+                    setInputValues({
+                      ...inputValues,
+                      phase1Target: e.target.value,
+                    });
                   }}
                   onBlur={(e) => {
                     const newInputValues = { ...inputValues };
@@ -2674,7 +2992,11 @@ function App() {
                   type="number"
                   step="0.01"
                   className="input w-full"
-                  value={inputValues.phase2Target !== undefined ? inputValues.phase2Target : (settings.phase2Target || "")}
+                  value={
+                    inputValues.phase2Target !== undefined
+                      ? inputValues.phase2Target
+                      : settings.phase2Target || ""
+                  }
                   onChange={(e) => {
                     let val = e.target.value;
                     if (val === "") {
@@ -2696,7 +3018,10 @@ function App() {
                     }
                   }}
                   onFocus={(e) => {
-                    setInputValues({ ...inputValues, phase2Target: e.target.value });
+                    setInputValues({
+                      ...inputValues,
+                      phase2Target: e.target.value,
+                    });
                   }}
                   onBlur={(e) => {
                     const newInputValues = { ...inputValues };
@@ -2715,7 +3040,11 @@ function App() {
                 type="number"
                 step="0.01"
                 className="input w-full"
-                value={inputValues.dailyDrawdownLimit !== undefined ? inputValues.dailyDrawdownLimit : (settings.dailyDrawdownLimit || "")}
+                value={
+                  inputValues.dailyDrawdownLimit !== undefined
+                    ? inputValues.dailyDrawdownLimit
+                    : settings.dailyDrawdownLimit || ""
+                }
                 onChange={(e) => {
                   let val = e.target.value;
                   if (val === "") {
@@ -2737,7 +3066,10 @@ function App() {
                   }
                 }}
                 onFocus={(e) => {
-                  setInputValues({ ...inputValues, dailyDrawdownLimit: e.target.value });
+                  setInputValues({
+                    ...inputValues,
+                    dailyDrawdownLimit: e.target.value,
+                  });
                 }}
                 onBlur={(e) => {
                   const newInputValues = { ...inputValues };
@@ -2755,11 +3087,18 @@ function App() {
                 inputMode="numeric"
                 pattern="[0-9]*"
                 className="input w-full"
-                value={inputValues.masterAccountBalance !== undefined ? inputValues.masterAccountBalance : (settings.masterAccountBalance || "")}
+                value={
+                  inputValues.masterAccountBalance !== undefined
+                    ? inputValues.masterAccountBalance
+                    : settings.masterAccountBalance || ""
+                }
                 onChange={(e) => {
                   let val = e.target.value;
                   if (val === "") {
-                    setInputValues({ ...inputValues, masterAccountBalance: "" });
+                    setInputValues({
+                      ...inputValues,
+                      masterAccountBalance: "",
+                    });
                     return;
                   }
                   val = val.replace(/[^\d.]/g, "");
@@ -2767,17 +3106,26 @@ function App() {
                     val = val.replace(/^0+/, "");
                   }
                   if (val === "" || val === ".") {
-                    setInputValues({ ...inputValues, masterAccountBalance: val });
+                    setInputValues({
+                      ...inputValues,
+                      masterAccountBalance: val,
+                    });
                     return;
                   }
                   const numValue = Number(val);
                   if (!isNaN(numValue) && numValue >= 0) {
-                    setInputValues({ ...inputValues, masterAccountBalance: val });
+                    setInputValues({
+                      ...inputValues,
+                      masterAccountBalance: val,
+                    });
                     handleSettingChange("masterAccountBalance", numValue);
                   }
                 }}
                 onFocus={(e) => {
-                  setInputValues({ ...inputValues, masterAccountBalance: e.target.value });
+                  setInputValues({
+                    ...inputValues,
+                    masterAccountBalance: e.target.value,
+                  });
                 }}
                 onBlur={(e) => {
                   const newInputValues = { ...inputValues };
@@ -2789,7 +3137,8 @@ function App() {
                 For master account tracking
               </p>
             </div>
-            {metrics.currentPhase === "Master" || settings.challengeType === "zero-step" ? (
+            {metrics.currentPhase === "Master" ||
+            settings.challengeType === "zero-step" ? (
               <div>
                 <label className="block text-xs sm:text-sm font-medium mb-1">
                   Monthly Target ($)
@@ -2799,7 +3148,11 @@ function App() {
                   inputMode="numeric"
                   pattern="[0-9]*"
                   className="input w-full"
-                  value={inputValues.monthlyTarget !== undefined ? inputValues.monthlyTarget : (settings.monthlyTarget || "")}
+                  value={
+                    inputValues.monthlyTarget !== undefined
+                      ? inputValues.monthlyTarget
+                      : settings.monthlyTarget || ""
+                  }
                   onChange={(e) => {
                     let val = e.target.value;
                     if (val === "") {
@@ -2821,7 +3174,10 @@ function App() {
                     }
                   }}
                   onFocus={(e) => {
-                    setInputValues({ ...inputValues, monthlyTarget: e.target.value });
+                    setInputValues({
+                      ...inputValues,
+                      monthlyTarget: e.target.value,
+                    });
                   }}
                   onBlur={(e) => {
                     const newInputValues = { ...inputValues };
@@ -2842,9 +3198,11 @@ function App() {
           <div className="card text-center p-2 sm:p-3">
             <div className="text-xs sm:text-sm text-gray-400 mb-1">Balance</div>
             <div className="text-base sm:text-lg md:text-xl font-bold break-words">
-              ${(settings.challengeType === "zero-step" 
-                ? Number(settings.masterAccountBalance) 
-                : settings.accountBalance).toLocaleString()}
+              $
+              {(settings.challengeType === "zero-step"
+                ? Number(settings.masterAccountBalance)
+                : settings.accountBalance
+              ).toLocaleString()}
             </div>
           </div>
           <div className="card text-center p-2 sm:p-3">
@@ -2854,12 +3212,20 @@ function App() {
             </div>
           </div>
           <div className="card text-center p-2 sm:p-3">
-            <div className="text-xs sm:text-sm text-gray-400 mb-1">Win Rate</div>
-            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.winRate}%</div>
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">
+              Win Rate
+            </div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">
+              {metrics.winRate}%
+            </div>
           </div>
           <div className="card text-center p-2 sm:p-3">
-            <div className="text-xs sm:text-sm text-gray-400 mb-1">Expectancy</div>
-            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.expectancy}</div>
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">
+              Expectancy
+            </div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">
+              {metrics.expectancy}
+            </div>
           </div>
           <div className="card text-center p-2 sm:p-3">
             <div className="text-xs sm:text-sm text-gray-400 mb-1">Grade</div>
@@ -2872,12 +3238,18 @@ function App() {
             </div>
           </div>
           <div className="card text-center p-2 sm:p-3">
-            <div className="text-xs sm:text-sm text-gray-400 mb-1">Lot Size</div>
-            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.suggestedLotSize}</div>
+            <div className="text-xs sm:text-sm text-gray-400 mb-1">
+              Lot Size
+            </div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">
+              {metrics.suggestedLotSize}
+            </div>
           </div>
           <div className="card text-center p-2 sm:p-3">
             <div className="text-xs sm:text-sm text-gray-400 mb-1">Trades</div>
-            <div className="text-base sm:text-lg md:text-xl font-bold">{metrics.totalTrades}</div>
+            <div className="text-base sm:text-lg md:text-xl font-bold">
+              {metrics.totalTrades}
+            </div>
           </div>
         </div>
 
@@ -2948,7 +3320,8 @@ function App() {
                 </p>
               </div>
             )}
-            {(metrics.currentPhase === "Master" || settings.challengeType === "zero-step") &&
+            {(metrics.currentPhase === "Master" ||
+              settings.challengeType === "zero-step") &&
               settings.masterAccountBalance > 0 && (
                 <div>
                   <div className="flex justify-between mb-2">
@@ -2968,22 +3341,35 @@ function App() {
                   {Number(settings.monthlyTarget) > 0 && (
                     <div className="mt-3">
                       <div className="flex justify-between mb-2">
-                        <span className="text-sm font-medium">Monthly Target</span>
+                        <span className="text-sm font-medium">
+                          Monthly Target
+                        </span>
                         <span className="text-sm text-emerald-400">
-                          {Number(metrics.monthlyTargetProgress) > 0 ? `${metrics.monthlyTargetProgress}%` : "0%"}
+                          {Number(metrics.monthlyTargetProgress) > 0
+                            ? `${metrics.monthlyTargetProgress}%`
+                            : "0%"}
                         </span>
                       </div>
                       <div className="w-full bg-gray-700 rounded-full h-3">
                         <div
                           className="bg-sky-500 h-3 rounded-full transition-all"
-                          style={{ 
-                            width: `${Math.min(Number(metrics.monthlyTargetProgress) || 0, 100)}%` 
+                          style={{
+                            width: `${Math.min(
+                              Number(metrics.monthlyTargetProgress) || 0,
+                              100
+                            )}%`,
                           }}
                         />
                       </div>
                       <p className="text-xs text-gray-500 mt-1">
-                        Target: ${Number(settings.monthlyTarget).toLocaleString()} | 
-                        Progress: ${(Number(metrics.currentEquity) - Number(metrics.monthlyStartingBalance)).toLocaleString()} / ${Number(settings.monthlyTarget).toLocaleString()}
+                        Target: $
+                        {Number(settings.monthlyTarget).toLocaleString()} |
+                        Progress: $
+                        {(
+                          Number(metrics.currentEquity) -
+                          Number(metrics.monthlyStartingBalance)
+                        ).toLocaleString()}{" "}
+                        / ${Number(settings.monthlyTarget).toLocaleString()}
                       </p>
                     </div>
                   )}
@@ -3112,7 +3498,11 @@ function App() {
                           return;
                         }
                         val = val.replace(/[^\d.]/g, "");
-                        if (val.length > 1 && val[0] === "0" && val[1] !== ".") {
+                        if (
+                          val.length > 1 &&
+                          val[0] === "0" &&
+                          val[1] !== "."
+                        ) {
                           val = val.replace(/^0+/, "");
                         }
                         setNewTrade({ ...newTrade, lotSize: val });
@@ -3381,7 +3771,10 @@ function App() {
                 </div>
               </div>
               <div className="mt-4 flex justify-end">
-                <button onClick={handleAddTrade} className="btn-primary w-full sm:w-auto">
+                <button
+                  onClick={handleAddTrade}
+                  className="btn-primary w-full sm:w-auto"
+                >
                   Save Trade
                 </button>
               </div>
@@ -3430,7 +3823,10 @@ function App() {
               <tbody>
                 {trades.length === 0 ? (
                   <tr>
-                    <td colSpan="11" className="text-center p-6 sm:p-8 text-gray-500 text-sm sm:text-base">
+                    <td
+                      colSpan="11"
+                      className="text-center p-6 sm:p-8 text-gray-500 text-sm sm:text-base"
+                    >
                       No trades yet. Click "Add Trade" to get started.
                     </td>
                   </tr>
@@ -3498,7 +3894,11 @@ function App() {
                               return;
                             }
                             val = val.replace(/[^\d.]/g, "");
-                            if (val.length > 1 && val[0] === "0" && val[1] !== ".") {
+                            if (
+                              val.length > 1 &&
+                              val[0] === "0" &&
+                              val[1] !== "."
+                            ) {
                               val = val.replace(/^0+/, "");
                             }
                             updateTrade(trade.id, "lotSize", val);
