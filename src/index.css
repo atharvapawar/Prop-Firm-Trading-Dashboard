@@ -1,0 +1,322 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@layer base {
+  :root {
+    --cyan:   #00d9ff;
+    --green:  #00ff9d;
+    --red:    #ff2d55;
+    --gold:   #ffd047;
+    --purple: #b06cff;
+    --bg:     #02060e;
+    --bg2:    #060d1a;
+    --surface: rgba(5, 14, 28, 0.88);
+    --border:  rgba(0, 217, 255, 0.12);
+    --border-h:rgba(0, 217, 255, 0.45);
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(rgba(0,217,255,0.028) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,217,255,0.028) 1px, transparent 1px),
+      radial-gradient(ellipse 80% 60% at 50% -10%, rgba(0,100,200,0.18) 0%, transparent 70%),
+      radial-gradient(ellipse 50% 40% at 90% 100%, rgba(100,0,200,0.1) 0%, transparent 60%);
+    background-size: 48px 48px, 48px 48px, 100% 100%, 100% 100%;
+    color: #e2eaf5;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+
+  /* Scanline overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.07) 2px,
+      rgba(0, 0, 0, 0.07) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+    animation: scanlines 12s linear infinite;
+  }
+}
+
+@layer components {
+  /* ── Elite Input ────────────────────── */
+  .dash-input {
+    background: rgba(3, 10, 22, 0.9);
+    border: 1px solid rgba(0, 217, 255, 0.15);
+    border-radius: 8px;
+    padding: 0.5rem 0.75rem;
+    color: #e2eaf5;
+    font-size: 0.85rem;
+    width: 100%;
+    transition: border-color 0.25s, box-shadow 0.25s, background 0.25s;
+    letter-spacing: 0.01em;
+  }
+  .dash-input::placeholder { color: rgba(130, 160, 200, 0.45); }
+  .dash-input:focus {
+    outline: none;
+    border-color: rgba(0, 217, 255, 0.6);
+    box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.08), 0 0 16px rgba(0, 217, 255, 0.12);
+    background: rgba(0, 20, 45, 0.95);
+  }
+
+  /* ── Primary Button ─────────────────── */
+  .btn-primary {
+    background: linear-gradient(135deg, #005fa3 0%, #0084c8 60%, #00a8e0 100%);
+    color: #ffffff;
+    font-weight: 600;
+    padding: 0.48rem 1.1rem;
+    border-radius: 8px;
+    border: 1px solid rgba(0, 217, 255, 0.3);
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
+    box-shadow: 0 0 12px rgba(0, 180, 255, 0.18), inset 0 1px 0 rgba(255,255,255,0.1);
+    position: relative;
+    overflow: hidden;
+  }
+  .btn-primary::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, transparent 60%);
+    pointer-events: none;
+  }
+  .btn-primary:hover {
+    box-shadow: 0 0 22px rgba(0, 217, 255, 0.35), 0 4px 16px rgba(0,0,0,0.4);
+    transform: translateY(-1px);
+    border-color: rgba(0, 217, 255, 0.55);
+  }
+  .btn-primary:active { transform: translateY(0) scale(0.97); }
+
+  /* ── Secondary Button ───────────────── */
+  .btn-secondary {
+    background: rgba(10, 22, 42, 0.9);
+    color: rgba(180, 210, 240, 0.9);
+    font-weight: 500;
+    padding: 0.48rem 1rem;
+    border-radius: 8px;
+    border: 1px solid rgba(0, 217, 255, 0.14);
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
+  }
+  .btn-secondary:hover {
+    background: rgba(0, 40, 80, 0.8);
+    border-color: rgba(0, 217, 255, 0.35);
+    color: #fff;
+    box-shadow: 0 0 14px rgba(0, 217, 255, 0.14);
+    transform: translateY(-1px);
+  }
+  .btn-secondary:active { transform: translateY(0) scale(0.97); }
+
+  /* ── Elite Card ─────────────────────── */
+  .dash-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.25rem 1.5rem;
+    backdrop-filter: blur(20px) saturate(160%);
+    transition: border-color 0.3s, box-shadow 0.3s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    position: relative;
+    overflow: hidden;
+  }
+  .dash-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(0,217,255,0.04) 0%, transparent 60%);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .dash-card > * { position: relative; z-index: 1; }
+  .dash-card:hover {
+    border-color: var(--border-h);
+    box-shadow: 0 0 30px rgba(0,217,255,0.1), 0 8px 32px rgba(0,0,0,0.5);
+    transform: translateY(-2px);
+  }
+
+  /* ── Metric Card Sigil ──────────────── */
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.1rem 1.2rem 1rem;
+    backdrop-filter: blur(24px) saturate(180%);
+    position: relative;
+    overflow: hidden;
+    cursor: default;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .metric-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(0,217,255,0.5), transparent);
+    pointer-events: none;
+  }
+  .metric-card::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    background: radial-gradient(ellipse 60% 40% at 30% 20%, rgba(0,217,255,0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .metric-card:hover {
+    border-color: rgba(0, 217, 255, 0.4);
+    box-shadow: 0 0 24px rgba(0,217,255,0.12), 0 12px 40px rgba(0,0,0,0.5);
+    transform: translateY(-3px);
+  }
+  .metric-card > * { position: relative; z-index: 1; }
+
+  /* ── Progress Bar ───────────────────── */
+  .elite-progress-track {
+    width: 100%;
+    background: rgba(0, 30, 60, 0.8);
+    border-radius: 99px;
+    height: 6px;
+    overflow: hidden;
+    border: 1px solid rgba(0,100,200,0.2);
+  }
+  .elite-progress-bar {
+    height: 100%;
+    border-radius: 99px;
+    position: relative;
+    transition: width 1.2s cubic-bezier(0.34, 1.2, 0.64, 1);
+  }
+  .elite-progress-bar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 99px;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
+    animation: shimmer 2.5s ease-in-out infinite;
+  }
+
+  /* ── Glow Text ──────────────────────── */
+  .glow-cyan  { color: var(--cyan);   text-shadow: 0 0 18px rgba(0,217,255,0.6); }
+  .glow-green { color: var(--green);  text-shadow: 0 0 18px rgba(0,255,157,0.6); }
+  .glow-red   { color: var(--red);    text-shadow: 0 0 18px rgba(255,45,85,0.6); }
+  .glow-gold  { color: var(--gold);   text-shadow: 0 0 18px rgba(255,208,71,0.6); }
+  .glow-purple{ color: var(--purple); text-shadow: 0 0 18px rgba(176,108,255,0.6); }
+
+  /* ── Scrollbar ──────────────────────── */
+  .scrollbar-elite {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(0,217,255,0.2) rgba(0,10,25,0.6);
+  }
+  .scrollbar-elite::-webkit-scrollbar { width: 4px; height: 4px; }
+  .scrollbar-elite::-webkit-scrollbar-track { background: rgba(0,10,25,0.6); }
+  .scrollbar-elite::-webkit-scrollbar-thumb {
+    background: rgba(0,217,255,0.25);
+    border-radius: 99px;
+  }
+  .scrollbar-elite::-webkit-scrollbar-thumb:hover { background: rgba(0,217,255,0.5); }
+
+  /* ── Corner Marks ───────────────────── */
+  .corner-mark {
+    position: absolute;
+    width: 10px; height: 10px;
+    border-color: rgba(0,217,255,0.45);
+    border-style: solid;
+  }
+  .corner-mark-tl { top: 8px; left: 8px; border-width: 1px 0 0 1px; border-radius: 2px 0 0 0; }
+  .corner-mark-tr { top: 8px; right: 8px; border-width: 1px 1px 0 0; border-radius: 0 2px 0 0; }
+  .corner-mark-bl { bottom: 8px; left: 8px; border-width: 0 0 1px 1px; border-radius: 0 0 0 2px; }
+  .corner-mark-br { bottom: 8px; right: 8px; border-width: 0 1px 1px 0; border-radius: 0 0 2px 0; }
+
+  /* ── Status Dot ─────────────────────── */
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse-dot 2s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  /* ── Table Row ──────────────────────── */
+  .trade-row {
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .trade-row:hover { background: rgba(0, 217, 255, 0.04); }
+  .trade-row:hover td { box-shadow: inset 0 0 0 0 transparent; }
+}
+
+@layer utilities {
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type="number"] { -moz-appearance: textfield; }
+}
+
+/* ── Keyframes ──────────────────────────── */
+@keyframes scanlines {
+  0%   { background-position: 0 0; }
+  100% { background-position: 0 100vh; }
+}
+
+@keyframes shimmer {
+  0%   { transform: translateX(-200%); }
+  100% { transform: translateX(300%); }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1;   box-shadow: 0 0 6px var(--green); }
+  50%       { opacity: 0.5; box-shadow: 0 0 12px var(--green); }
+}
+
+@keyframes pulse-gold {
+  0%, 100% { box-shadow: 0 0 10px rgba(255,208,71,0.25); }
+  50%       { box-shadow: 0 0 25px rgba(255,208,71,0.55), 0 0 40px rgba(255,208,71,0.2); }
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 8px rgba(255,45,85,0.3); }
+  50%       { box-shadow: 0 0 22px rgba(255,45,85,0.7), 0 0 40px rgba(255,45,85,0.25); }
+}
+
+@keyframes float-y {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-5px); }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes draw-line {
+  from { stroke-dashoffset: 100; }
+  to   { stroke-dashoffset: 0; }
+}
+
+@keyframes flicker {
+  0%, 96%, 100% { opacity: 1; }
+  97%           { opacity: 0.6; }
+  98%           { opacity: 1; }
+  99%           { opacity: 0.7; }
+}
+
+.animate-pulse-gold   { animation: pulse-gold  2.5s ease-in-out infinite; }
+.animate-pulse-red    { animation: pulse-red   1.5s ease-in-out infinite; }
+.animate-float        { animation: float-y     4s ease-in-out infinite; }
+.animate-spin-slow    { animation: spin-slow  12s linear infinite; }
+.animate-flicker      { animation: flicker     8s ease-in-out infinite; }
