@@ -1,6 +1,7 @@
 import * as XLSX from "xlsx";
 import type { Trade, Settings } from "../types";
 import { CANONICAL_TRADE_COLUMNS, EXCEL_SHEET_NAMES } from "./trading-data";
+import { getStartingBalance } from "./utils";
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
@@ -39,16 +40,16 @@ function computeStats(trades: Trade[], settings: Settings) {
   const losses = trades.length - wins;
   const winRatePct = trades.length > 0 ? (wins / trades.length) * 100 : 0;
 
-  let currentEquity = settings.accountBalance;
-  let peakEquity = settings.accountBalance;
+  const start = getStartingBalance(settings);
+  let currentEquity = start;
+  let peakEquity = start;
   let maxDrawdown = 0;
 
   if (trades.length > 0) {
     const last = trades[trades.length - 1];
-    if (last?.equityAfter)
-      currentEquity = Number(last.equityAfter) || settings.accountBalance;
+    if (last?.equityAfter) currentEquity = Number(last.equityAfter) || start;
 
-    let running = settings.accountBalance;
+    let running = start;
     for (const t of trades) {
       if (!t?.resultDollars) continue;
       running += Number(t.resultDollars) || 0;
@@ -63,7 +64,7 @@ function computeStats(trades: Trade[], settings: Settings) {
     wins,
     losses,
     winRatePct,
-    totalPL: currentEquity - settings.accountBalance,
+    totalPL: currentEquity - start,
     currentEquity,
     peakEquity,
     maxDrawdown,

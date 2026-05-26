@@ -29,6 +29,7 @@ import {
   recalculateAllTrades,
   calculateMetrics,
 } from "../lib/trade-calculations";
+import { getPipDollarPerLot } from "../lib/pip-values";
 import {
   exportToCSV,
   exportToExcel,
@@ -36,11 +37,17 @@ import {
   uploadToExistingExcel,
 } from "../lib/excel-utils";
 import DatePicker from "../components/DatePicker";
+import {
+  formatCurrency,
+  formatSign,
+  getStartingBalance,
+  formatDateLocal,
+} from "../lib/utils";
 
 // ─── Module-level constants ──────────────────────────────────────────────────
 
 const SESSIONS = ["London", "New York", "Asian", "Sydney", "Overlap"] as const;
-const today = new Date().toISOString().split("T")[0];
+const today = formatDateLocal(new Date());
 
 const EMPTY_FORM = {
   date: today,
@@ -83,24 +90,66 @@ function cn(...args: (string | false | null | undefined)[]) {
   return args.filter(Boolean).join(" ");
 }
 
-function formatCurrency(val: number | string, d = 2) {
-  const n = Number(val);
-  if (isNaN(n)) return "$0.00";
-  return `$${Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d })}`;
-}
-
-function formatSign(val: number | string) {
-  const n = Number(val);
-  if (isNaN(n)) return "$0.00";
-  return `${n >= 0 ? "+" : "-"}${formatCurrency(Math.abs(n))}`;
-}
-
 /** Factory: returns a form-field updater bound to a given state setter.
  *  Eliminates the duplicate handleFormChange / handleEditFormChange pattern. */
 function makeFormSetter(
   setter: React.Dispatch<React.SetStateAction<typeof EMPTY_FORM>>,
 ) {
   return (k: string, v: string) => setter((p) => ({ ...p, [k]: v }));
+}
+
+// `getStartingBalance` imported from `src/lib/utils`.
+
+/** Editable numeric input that keeps a string while typing to allow deletion
+ *  without immediately forcing a numeric value (prevents the '0' reset bug). */
+function EditableNumberInput({
+  value,
+  onChange,
+  step = "1",
+  min,
+  max,
+  className,
+}: {
+  value: number | string;
+  onChange: (n: number) => void;
+  step?: string | number;
+  min?: number;
+  max?: number;
+  className?: string;
+}) {
+  const [text, setText] = useState(String(value ?? ""));
+
+  useEffect(() => {
+    setText(String(value ?? ""));
+  }, [value]);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const t = e.target.value;
+    setText(t);
+    // Accept intermediate states like empty string, '-', '.' without committing
+    if (t === "" || t === "-" || t === "." || t === "-.") return;
+    const n = Number(t);
+    if (!isNaN(n)) onChange(n);
+  };
+
+  const handleBlur = () => {
+    if (text === "" || text === "-" || text === "." || text === "-.") {
+      setText(String(value ?? ""));
+    }
+  };
+
+  return (
+    <input
+      type="number"
+      className={className}
+      value={text}
+      onChange={handleChange}
+      onBlur={handleBlur}
+      step={step}
+      min={min}
+      max={max}
+    />
+  );
 }
 
 // ─── Animated Counter ────────────────────────────────────────────────────────
@@ -463,6 +512,7 @@ interface TradeFormProps {
   onSubmit: () => void;
   onCancel?: () => void;
   isEdit?: boolean;
+  suggestedLot?: string;
 }
 
 function TradeForm({
@@ -471,6 +521,7 @@ function TradeForm({
   onSubmit,
   onCancel,
   isEdit,
+  suggestedLot,
 }: TradeFormProps) {
   return (
     <motion.div
@@ -491,15 +542,18 @@ function TradeForm({
           <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">
             Session
           </label>
-          <select
+          <input
+            list="session-list"
             value={form.session}
             onChange={(e) => onChange("session", e.target.value)}
             className="dash-input"
-          >
+            placeholder="e.g. London"
+          />
+          <datalist id="session-list">
             {SESSIONS.map((s) => (
-              <option key={s}>{s}</option>
+              <option key={s} value={s} />
             ))}
-          </select>
+          </datalist>
         </div>
         <div>
           <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">
@@ -522,15 +576,25 @@ function TradeForm({
           <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">
             Lot Size
           </label>
-          <input
-            type="number"
-            step="0.01"
-            min="0"
+          <EditableNumberInput
             value={form.lotSize}
-            onChange={(e) => onChange("lotSize", e.target.value)}
+            onChange={(n) => onChange("lotSize", String(n))}
+            step={0.01}
+            min={0}
             className="dash-input"
-            placeholder="0.10"
           />
+          {suggestedLot && (
+            <p className="text-[10px] text-slate-600 font-mono mt-1">
+              Suggested:{" "}
+              <button
+                onClick={() => onChange("lotSize", suggestedLot)}
+                className="btn-secondary text-xs px-2 py-1 rounded"
+                type="button"
+              >
+                {suggestedLot} lot
+              </button>
+            </p>
+          )}
         </div>
         <div>
           <label className="block text-[10px] text-slate-500 mb-1 uppercase tracking-wider">
@@ -644,21 +708,45 @@ export default function Dashboard() {
 
   // ── Bootstrap from localStorage ──────────────────────────────────────────
   useEffect(() => {
+    // Read saved settings first so we can use them for an initial recalc.
+    let parsedSettings: any = null;
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object")
+        if (parsed && typeof parsed === "object") {
+          parsedSettings = parsed;
           setSettings((p) => ({ ...p, ...parsed }));
+        }
       }
     } catch {
       /* corrupt storage — start with defaults */
     }
+
+    // Load trades and perform a one-time migration: clear any stale
+    // `equityAfter` values so the deterministic recalculation engine
+    // recomputes equity from the configured starting balance.
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.TRADES);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setTrades(parsed);
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.map((t: any) => ({ ...t, equityAfter: "" }));
+          const appliedSettings =
+            parsedSettings && typeof parsedSettings === "object"
+              ? ({ ...settings, ...parsedSettings } as Settings)
+              : settings;
+          const recalced = recalculateAllTrades(
+            cleaned as Trade[],
+            appliedSettings,
+          );
+          setTrades(recalced);
+          try {
+            localStorage.setItem(STORAGE_KEYS.TRADES, JSON.stringify(recalced));
+          } catch {
+            /* ignore localStorage write errors */
+          }
+        }
       }
     } catch {
       /* corrupt storage — start empty */
@@ -697,10 +785,7 @@ export default function Dashboard() {
   );
 
   const equityData = useMemo(() => {
-    const initial =
-      settings.challengeType === "zero-step"
-        ? Number(settings.masterAccountBalance) || settings.accountBalance
-        : settings.accountBalance;
+    const initial = getStartingBalance(settings);
     const pts: { trade: number; equity: number }[] = [
       { trade: 0, equity: initial },
     ];
@@ -714,7 +799,7 @@ export default function Dashboard() {
   /** Equity Y-axis bounds — derived in a single pass over equityData. */
   const equityBounds = useMemo(() => {
     if (!equityData.length)
-      return { min: 0, max: settings.accountBalance * 1.15 };
+      return { min: 0, max: getStartingBalance(settings) * 1.15 };
     const vals = equityData.map((d) => d.equity);
     return {
       min: Math.floor(Math.min(...vals) * 0.994),
@@ -759,7 +844,7 @@ export default function Dashboard() {
       riskDollars: "0",
       rewardDollars: "0",
       resultDollars: "0",
-      equityAfter: String(settings.accountBalance),
+      equityAfter: "",
     };
     saveTrades(recalculateAllTrades([...trades, newTrade], settings));
     setForm((p) => ({ ...EMPTY_FORM, date: p.date }));
@@ -831,7 +916,7 @@ export default function Dashboard() {
         riskDollars: "0",
         rewardDollars: "0",
         resultDollars: "0",
-        equityAfter: String(settings.accountBalance),
+        equityAfter: "",
       }));
       saveTrades(recalculateAllTrades(cleaned, settings));
     },
@@ -909,9 +994,28 @@ export default function Dashboard() {
         ? 65
         : 35;
   const lotNum = Number(metrics.suggestedLotSize);
-  const totalPL = equityNum - settings.accountBalance;
+  const startBalance = getStartingBalance(settings);
+  const totalPL = equityNum - startBalance;
   const isPositive = totalPL >= 0;
   const riskDollar = (equityNum * settings.riskPercent) / 100;
+
+  // Compute a suggested lot for a given pair and the current equity/risk
+  // settings. This prefers the provided `pair` value (form input) and
+  // falls back to the most-recent trade / default pair when absent.
+  const computeSuggestedLot = (pair?: string) => {
+    const entry = (pair || "").trim().toUpperCase();
+    const fallbackPair =
+      recalculated.length > 0
+        ? recalculated[recalculated.length - 1]?.entry
+        : "XAUUSD";
+    const pipVal = getPipDollarPerLot(entry || fallbackPair);
+    const currentEquityNum = Number(metrics.currentEquity) || startBalance;
+    const riskDollarsLocal = (currentEquityNum * settings.riskPercent) / 100;
+    const sl = Number(settings.stopLossPips) || 0;
+    if (sl <= 0 || pipVal <= 0) return "0.00";
+    const rawLot = riskDollarsLocal / (sl * pipVal);
+    return rawLot > 0 ? (Math.floor(rawLot * 100) / 100).toFixed(2) : "0.00";
+  };
 
   // ─────────────────────────────────────────────────────────────────────────
   return (
@@ -963,7 +1067,7 @@ export default function Dashboard() {
               ease: [0.34, 1.56, 0.64, 1],
             }}
             className={cn(
-              "px-5 py-2.5 rounded-xl font-black text-sm tracking-[0.1em] border",
+              "px-5 py-2.5 rounded-xl font-black text-sm tracking-widest border",
               metrics.currentPhase === "Master"
                 ? "bg-[rgba(255,208,71,0.08)] border-[rgba(255,208,71,0.3)]  text-[#ffd047] animate-pulse-gold"
                 : metrics.currentPhase === "Phase2"
@@ -1014,10 +1118,8 @@ export default function Dashboard() {
           decimals={2}
           sigilKey="equity"
           color="#00d9ff"
-          glowClass={
-            equityNum >= settings.accountBalance ? "glow-green" : "glow-red"
-          }
-          sub={`Start ${formatCurrency(settings.accountBalance)}`}
+          glowClass={equityNum >= startBalance ? "glow-green" : "glow-red"}
+          sub={`Start ${formatCurrency(getStartingBalance(settings))}`}
         />
         <MetricCard
           index={1}
@@ -1116,8 +1218,8 @@ export default function Dashboard() {
             {
               label: "Return %",
               value:
-                settings.accountBalance > 0
-                  ? `${isPositive ? "+" : ""}${((totalPL / settings.accountBalance) * 100).toFixed(2)}%`
+                startBalance > 0
+                  ? `${isPositive ? "+" : ""}${((totalPL / startBalance) * 100).toFixed(2)}%`
                   : "—",
               cls: isPositive ? "glow-green" : "glow-red",
               size: "text-xl font-bold",
@@ -1186,7 +1288,7 @@ export default function Dashboard() {
                 : {
                     label: `Phase 1 — ${settings.phase1Target}% target`,
                     pct: metrics.phase1Progress,
-                    from: settings.accountBalance,
+                    from: getStartingBalance(settings),
                     to: metrics.phase1Target,
                     grad: "linear-gradient(90deg,#005fa3,#00d9ff)",
                   },
@@ -1194,7 +1296,7 @@ export default function Dashboard() {
                 ? {
                     label: `Phase 1 — ${settings.phase1Target}% target`,
                     pct: metrics.phase1Progress,
-                    from: settings.accountBalance,
+                    from: getStartingBalance(settings),
                     to: metrics.phase1Target,
                     grad: "linear-gradient(90deg,#005fa3,#00d9ff)",
                   }
@@ -1373,6 +1475,11 @@ export default function Dashboard() {
                       form={form}
                       onChange={handleFormChange}
                       onSubmit={handleAdd}
+                      suggestedLot={
+                        form.entry.trim()
+                          ? computeSuggestedLot(form.entry)
+                          : metrics.suggestedLotSize
+                      }
                     />
                   </div>
                 )}
@@ -1457,6 +1564,11 @@ export default function Dashboard() {
                                 onSubmit={handleSaveEdit}
                                 onCancel={() => setEditingId(null)}
                                 isEdit
+                                suggestedLot={
+                                  editForm.entry.trim()
+                                    ? computeSuggestedLot(editForm.entry)
+                                    : metrics.suggestedLotSize
+                                }
                               />
                             </td>
                           ) : deletingId === trade.id ? (
@@ -1527,7 +1639,7 @@ export default function Dashboard() {
                               <td className="py-2.5 px-3 text-right text-slate-300 font-mono text-[11px]">
                                 {formatCurrency(trade.equityAfter)}
                               </td>
-                              <td className="py-2.5 px-3 text-slate-600 max-w-[160px] truncate hidden md:table-cell text-[11px]">
+                              <td className="py-2.5 px-3 text-slate-600 max-w-40 truncate hidden md:table-cell text-[11px]">
                                 {trade.notes}
                               </td>
                               <td className="py-2.5 px-3 text-center">
@@ -1632,9 +1744,7 @@ export default function Dashboard() {
               <div className="flex gap-4 text-[10px] font-mono text-slate-600">
                 <span>
                   <span className="text-slate-500">START </span>
-                  {formatCurrency(
-                    equityData[0]?.equity ?? settings.accountBalance,
-                  )}
+                  {formatCurrency(equityData[0]?.equity ?? startBalance)}
                 </span>
                 <span>
                   <span className="text-slate-500">TRADES </span>
@@ -1713,7 +1823,7 @@ export default function Dashboard() {
                   />
                   <Tooltip content={<EliteTooltip />} />
                   <ReferenceLine
-                    y={settings.accountBalance}
+                    y={startBalance}
                     stroke="rgba(100,150,200,0.3)"
                     strokeDasharray="4 3"
                     label={{
@@ -1923,18 +2033,12 @@ export default function Dashboard() {
                 <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                   Account Balance ($)
                 </label>
-                <input
-                  type="number"
-                  className="dash-input"
+                <EditableNumberInput
                   value={settings.accountBalance}
-                  onChange={(e) =>
-                    handleSettingsChange(
-                      "accountBalance",
-                      Number(e.target.value),
-                    )
-                  }
+                  onChange={(v) => handleSettingsChange("accountBalance", v)}
                   step="1000"
-                  min="1000"
+                  min={1000}
+                  className="dash-input"
                 />
                 <div className="flex flex-wrap gap-1 mt-2">
                   {CHALLENGE_ACCOUNTS.map((a) => (
@@ -2001,16 +2105,13 @@ export default function Dashboard() {
                 <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                   Custom Risk % / Trade
                 </label>
-                <input
-                  type="number"
-                  className="dash-input"
+                <EditableNumberInput
                   value={settings.riskPercent}
-                  onChange={(e) =>
-                    handleSettingsChange("riskPercent", Number(e.target.value))
-                  }
+                  onChange={(v) => handleSettingsChange("riskPercent", v)}
                   step="0.05"
-                  min="0.05"
-                  max="5"
+                  min={0.05}
+                  max={5}
+                  className="dash-input"
                 />
                 <p className="text-[10px] text-slate-600 font-mono mt-1">
                   = {formatCurrency(riskDollar)} on current equity
@@ -2022,15 +2123,12 @@ export default function Dashboard() {
                 <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                   Stop Loss (pips)
                 </label>
-                <input
-                  type="number"
-                  className="dash-input"
+                <EditableNumberInput
                   value={settings.stopLossPips}
-                  onChange={(e) =>
-                    handleSettingsChange("stopLossPips", Number(e.target.value))
-                  }
+                  onChange={(v) => handleSettingsChange("stopLossPips", v)}
                   step="1"
-                  min="1"
+                  min={1}
+                  className="dash-input"
                 />
               </div>
 
@@ -2039,18 +2137,12 @@ export default function Dashboard() {
                 <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                   Take Profit (pips)
                 </label>
-                <input
-                  type="number"
-                  className="dash-input"
+                <EditableNumberInput
                   value={settings.takeProfitPips}
-                  onChange={(e) =>
-                    handleSettingsChange(
-                      "takeProfitPips",
-                      Number(e.target.value),
-                    )
-                  }
+                  onChange={(v) => handleSettingsChange("takeProfitPips", v)}
                   step="1"
-                  min="1"
+                  min={1}
+                  className="dash-input"
                 />
                 {settings.stopLossPips > 0 && (
                   <p className="text-[10px] text-slate-600 font-mono mt-1">
@@ -2068,19 +2160,13 @@ export default function Dashboard() {
                   <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                     Phase 1 Target (%)
                   </label>
-                  <input
-                    type="number"
-                    className="dash-input"
+                  <EditableNumberInput
                     value={settings.phase1Target}
-                    onChange={(e) =>
-                      handleSettingsChange(
-                        "phase1Target",
-                        Number(e.target.value),
-                      )
-                    }
+                    onChange={(v) => handleSettingsChange("phase1Target", v)}
                     step="0.5"
-                    min="0.5"
-                    max="20"
+                    min={0.5}
+                    max={20}
+                    className="dash-input"
                   />
                   <p className="text-[10px] text-slate-600 font-mono mt-1">
                     ={" "}
@@ -2098,19 +2184,13 @@ export default function Dashboard() {
                   <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                     Phase 2 Target (%)
                   </label>
-                  <input
-                    type="number"
-                    className="dash-input"
+                  <EditableNumberInput
                     value={settings.phase2Target}
-                    onChange={(e) =>
-                      handleSettingsChange(
-                        "phase2Target",
-                        Number(e.target.value),
-                      )
-                    }
+                    onChange={(v) => handleSettingsChange("phase2Target", v)}
                     step="0.5"
-                    min="0.5"
-                    max="20"
+                    min={0.5}
+                    max={20}
+                    className="dash-input"
                   />
                   <p className="text-[10px] text-slate-600 font-mono mt-1">
                     ={" "}
@@ -2128,19 +2208,15 @@ export default function Dashboard() {
                 <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                   Daily Drawdown Limit (%)
                 </label>
-                <input
-                  type="number"
-                  className="dash-input"
+                <EditableNumberInput
                   value={settings.dailyDrawdownLimit}
-                  onChange={(e) =>
-                    handleSettingsChange(
-                      "dailyDrawdownLimit",
-                      Number(e.target.value),
-                    )
+                  onChange={(v) =>
+                    handleSettingsChange("dailyDrawdownLimit", v)
                   }
                   step="0.5"
-                  min="0.5"
-                  max="20"
+                  min={0.5}
+                  max={20}
+                  className="dash-input"
                 />
                 <p className="text-[10px] text-slate-600 font-mono mt-1">
                   Max daily loss:{" "}
@@ -2155,21 +2231,20 @@ export default function Dashboard() {
                 <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                   Master Account Balance ($)
                 </label>
-                <input
-                  type="number"
-                  className="dash-input"
+                <EditableNumberInput
                   value={settings.masterAccountBalance}
-                  onChange={(e) =>
-                    handleSettingsChange(
-                      "masterAccountBalance",
-                      Number(e.target.value),
-                    )
+                  onChange={(v) =>
+                    handleSettingsChange("masterAccountBalance", v)
                   }
                   step="1000"
-                  min="0"
+                  min={0}
+                  className="dash-input"
                 />
                 <p className="text-[10px] text-slate-600 font-mono mt-1">
-                  Balance upon challenge pass
+                  Balance upon challenge pass. If set to a value &gt; 0 this
+                  overrides the "current" equity used for risk calculations and
+                  phase progress (useful after you pass into the master
+                  account).
                 </p>
               </div>
 
@@ -2178,18 +2253,12 @@ export default function Dashboard() {
                 <label className="block text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">
                   Monthly Target $ (Master)
                 </label>
-                <input
-                  type="number"
-                  className="dash-input"
+                <EditableNumberInput
                   value={settings.monthlyTarget}
-                  onChange={(e) =>
-                    handleSettingsChange(
-                      "monthlyTarget",
-                      Number(e.target.value),
-                    )
-                  }
+                  onChange={(v) => handleSettingsChange("monthlyTarget", v)}
                   step="100"
-                  min="0"
+                  min={0}
+                  className="dash-input"
                 />
                 <p className="text-[10px] text-slate-600 font-mono mt-1">
                   Set 0 to disable tracking
@@ -2227,11 +2296,11 @@ export default function Dashboard() {
         transition={{ delay: 1 }}
         className="mt-10 flex items-center justify-center gap-3"
       >
-        <div className="h-px w-16 bg-gradient-to-r from-transparent to-[rgba(0,217,255,0.15)]" />
+        <div className="h-px w-16 bg-linear-to-r from-transparent to-[rgba(0,217,255,0.15)]" />
         <span className="text-[10px] text-slate-700 uppercase tracking-[0.2em] font-mono">
           Prop Firm Command · {recalculated.length} positions · Local storage
         </span>
-        <div className="h-px w-16 bg-gradient-to-l from-transparent to-[rgba(0,217,255,0.15)]" />
+        <div className="h-px w-16 bg-linear-to-l from-transparent to-[rgba(0,217,255,0.15)]" />
       </motion.div>
     </div>
   );
